@@ -126,7 +126,6 @@ export function useTmuxMonitorPanel() {
     const binding =
       monitor.threadId !== null && monitor.threadId !== ""
         ? {
-            projectId: monitor.projectId,
             threadId: monitor.threadId,
             threadTitle: trimmedOrFallback(monitor.threadTitle, monitor.threadId),
           }

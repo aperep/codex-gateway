@@ -72,7 +72,7 @@ export function createThreadSettingsActions() {
       return this.saveThreadSettings(
         scope.hostId,
         scope.threadId,
-        navigation.selectedProjectId,
+        navigation.selectedCwd,
         settings,
       );
     },
@@ -80,7 +80,7 @@ export function createThreadSettingsActions() {
     async saveThreadSettings(
       hostId: number,
       threadId: string,
-      projectId: number | null,
+      cwd: string | null,
       settings: ThreadSettingsState,
     ) {
       const sessionIsCurrent = captureSessionEpoch();
@@ -92,7 +92,10 @@ export function createThreadSettingsActions() {
         });
         const runtime = useGatewayThreadRuntimeStore();
         const turnId = runtime.activeTurnIdsByThreadKey[pinnedKey(hostId, threadId)];
-        if (turnId !== undefined && ("model" in settings || "effort" in settings)) {
+        if (
+          turnId !== undefined &&
+          ("model" in settings || "effort" in settings || "summary" in settings)
+        ) {
           await requestRunningTurnSettingsUpdate({
             hostId,
             threadId,
@@ -110,7 +113,7 @@ export function createThreadSettingsActions() {
         if (!sessionIsCurrent()) return false;
         gateway.setError(
           messageFromError(error, gateway.t("app.updateThreadSettingsFailed"), gateway.errorLabels),
-          { hostId, projectId, threadId },
+          { hostId, cwd, threadId },
         );
         return false;
       }

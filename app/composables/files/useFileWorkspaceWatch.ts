@@ -9,7 +9,7 @@ const FILE_WATCH_RETRY_MS = 3_000;
 
 export function useFileWorkspaceWatch(input: {
   hostId: MaybeRefOrGetter<number>;
-  projectId: MaybeRefOrGetter<number | null>;
+  cwd: MaybeRefOrGetter<string>;
   threadId: MaybeRefOrGetter<string>;
   active: MaybeRefOrGetter<boolean>;
   authenticated: MaybeRefOrGetter<boolean>;
@@ -28,7 +28,7 @@ export function useFileWorkspaceWatch(input: {
     () =>
       [
         toValue(input.hostId),
-        toValue(input.projectId),
+        toValue(input.cwd),
         toValue(input.threadId),
         toValue(input.active),
         toValue(input.authenticated),
@@ -39,7 +39,7 @@ export function useFileWorkspaceWatch(input: {
     { immediate: true },
   );
   const stopClosed = gatewayDomainEvents.on("file-watch-closed", (event) => {
-    if (scopeKey(event.hostId, event.projectId, event.threadId) !== subscribedScope) return;
+    if (scopeKey(event.hostId, event.cwd, event.threadId) !== subscribedScope) return;
     subscribedScope = null;
     subscribedPaths = "";
     if (watchDesired()) retry.start();
@@ -48,12 +48,12 @@ export function useFileWorkspaceWatch(input: {
   async function reconcile() {
     const generation = ++desiredGeneration;
     retry.stop();
-    const projectId = toValue(input.projectId);
-    const desired = watchDesired() && projectId !== null;
+    const cwd = toValue(input.cwd);
+    const desired = watchDesired();
     const paths = normalizedWatchPaths(input.paths);
     const pathSignature = paths.join("\0");
     const nextScope = desired
-      ? scopeKey(toValue(input.hostId), projectId, toValue(input.threadId))
+      ? scopeKey(toValue(input.hostId), cwd, toValue(input.threadId))
       : null;
     if (
       subscribedScope !== null &&
@@ -66,7 +66,7 @@ export function useFileWorkspaceWatch(input: {
     }
     if (nextScope === null || nextScope === subscribedScope || disposed) return;
 
-    const [hostId, parsedProjectId, threadId] = parseScopeKey(nextScope);
+    const [hostId, parsedCwd, threadId] = parseScopeKey(nextScope);
     let subscriptionId = "";
     try {
       await realtime.request((requestId) => {
@@ -75,7 +75,7 @@ export function useFileWorkspaceWatch(input: {
           type: "file.watch.subscribe",
           requestId,
           hostId,
-          projectId: parsedProjectId,
+          cwd: parsedCwd,
           threadId,
           paths,
         };
@@ -100,16 +100,16 @@ export function useFileWorkspaceWatch(input: {
     return (
       toValue(input.active) === true &&
       toValue(input.authenticated) === true &&
-      toValue(input.projectId) !== null
+      toValue(input.cwd) !== ""
     );
   }
 
   function unsubscribe(key: string, subscriptionId: string) {
-    const [hostId, projectId, threadId] = parseScopeKey(key);
+    const [hostId, cwd, threadId] = parseScopeKey(key);
     realtime.send({
       type: "file.watch.unsubscribe",
       hostId,
-      projectId,
+      cwd,
       threadId,
       subscriptionId,
     });
@@ -138,11 +138,11 @@ function watchPathSignature(value: MaybeRefOrGetter<string[]>) {
   return normalizedWatchPaths(value).join("\0");
 }
 
-function scopeKey(hostId: number, projectId: number, threadId: string) {
-  return `${hostId}:${projectId}:${threadId}`;
+function scopeKey(hostId: number, cwd: string, threadId: string) {
+  return `${hostId}:${encodeURIComponent(cwd)}:${threadId}`;
 }
 
-function parseScopeKey(value: string): [number, number, string] {
-  const [hostId, projectId, ...threadId] = value.split(":");
-  return [Number(hostId), Number(projectId), threadId.join(":")];
+function parseScopeKey(value: string): [number, string, string] {
+  const [hostId, cwd = "", ...threadId] = value.split(":");
+  return [Number(hostId), decodeURIComponent(cwd), threadId.join(":")];
 }

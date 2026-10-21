@@ -25,7 +25,7 @@ export function useComposerController() {
   const threadView = useGatewayThreadViewStore();
   const { t } = useI18n();
   const { models, loadingModels } = storeToRefs(gateway);
-  const { selectedHostId, selectedProjectId, selectedThreadId } = storeToRefs(navigation);
+  const { selectedHostId, selectedCwd, selectedThreadId } = storeToRefs(navigation);
   const {
     selectedThreadGoal: selectedThreadGoalSnapshot,
     selectedThreadGoalObservedAt: selectedThreadGoalObservedAtSnapshot,
@@ -59,7 +59,7 @@ export function useComposerController() {
   );
   const isThreadRunning = computed(() => selectedRuntime.value?.canInterrupt === true);
   const composerInputEnabled = computed(
-    () => selectedThreadId.value !== null || selectedProjectId.value !== null,
+    () => selectedThreadId.value !== null || selectedCwd.value !== null,
   );
   const selectedTurnOptions = () => {
     const effort =
@@ -73,6 +73,9 @@ export function useComposerController() {
         settings.selectedApprovalMode.value === "custom"
           ? undefined
           : settings.selectedApprovalMode.value,
+      // Provider is a thread-creation choice. Existing threads already have a provider-bound
+      // session, so turn.start must not imply that the protocol can be switched in place.
+      ...(selectedThreadId.value === null ? { provider: settings.selectedProvider.value } : {}),
     };
   };
   const submit = useComposerTurnSubmit({
@@ -164,7 +167,7 @@ export function useComposerController() {
   function handleFileReferenceLimit(message: string) {
     bootstrap.setError(message, {
       hostId: selectedHostId.value,
-      projectId: selectedProjectId.value,
+      cwd: selectedCwd.value,
       threadId: selectedThreadId.value,
     });
   }
@@ -195,7 +198,7 @@ export function useComposerController() {
     composerInputEnabled,
     selectedHostId,
     selectedThreadId,
-    selectedProjectId,
+    selectedCwd,
     selectedThreadStatus,
     selectedThreadTokenUsage,
     isThreadRunning,

@@ -19,7 +19,7 @@ export const useGatewayBootstrapStore = defineStore("gateway-bootstrap", () => {
     message: string,
     context: {
       hostId?: number | null;
-      projectId?: number | null;
+      cwd?: string | null;
       threadId?: string | null;
       turnId?: string | null;
       transient?: boolean;
@@ -28,7 +28,7 @@ export const useGatewayBootstrapStore = defineStore("gateway-bootstrap", () => {
     error.value = {
       message,
       hostId: context.hostId ?? null,
-      projectId: context.projectId ?? null,
+      cwd: context.cwd ?? null,
       threadId: context.threadId ?? null,
       turnId: "turnId" in context ? (context.turnId ?? null) : null,
       transient: context.transient === true,

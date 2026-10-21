@@ -1,5 +1,10 @@
 import type { RpcEnvelope } from "./types";
 
+/**
+ * Codex server-request routing used at the provider boundary and by the RPC
+ * responder. Canonical events carry provider-neutral request kinds after this
+ * mapping; raw method names do not escape into the runtime event API.
+ */
 export const CURRENT_TIME_READ_METHOD = "currentTime/read";
 
 export const SERVER_REQUEST_ITEM_TYPES = {
@@ -18,22 +23,8 @@ export const PENDING_SERVER_REQUEST_METHODS = [
   CURRENT_TIME_READ_METHOD,
 ] as const;
 
-const THREAD_REQUEST_METHODS = new Set<string>([
-  "item/commandExecution/requestApproval",
-  "item/fileChange/requestApproval",
-  ...PENDING_SERVER_REQUEST_METHODS,
-]);
-
-export function isThreadServerRequestMethod(method: string) {
-  return THREAD_REQUEST_METHODS.has(method);
-}
-
-export function itemTypeForServerRequest(method: string) {
+export function itemTypeForServerRequest(method: string): string {
   return isRoutedServerRequestMethod(method) ? SERVER_REQUEST_ITEM_TYPES[method] : "serverRequest";
-}
-
-function isRoutedServerRequestMethod(method: string): method is RoutedServerRequestMethod {
-  return Object.hasOwn(SERVER_REQUEST_ITEM_TYPES, method);
 }
 
 export function isCurrentTimeReadRequest(message: RpcEnvelope) {
@@ -44,4 +35,8 @@ export function buildCurrentTimeReadResponse() {
   return {
     currentTimeAt: Math.floor(Date.now() / 1000),
   };
+}
+
+function isRoutedServerRequestMethod(method: string): method is RoutedServerRequestMethod {
+  return Object.hasOwn(SERVER_REQUEST_ITEM_TYPES, method);
 }

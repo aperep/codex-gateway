@@ -1,7 +1,6 @@
 import {
   configRange,
   count,
-  itemSummary,
   list,
   numeric,
   simpleNotification,
@@ -35,7 +34,6 @@ export const visibleNotificationMethods = [
   "hook/completed",
   "item/autoApprovalReview/started",
   "item/autoApprovalReview/completed",
-  "rawResponseItem/completed",
   "item/commandExecution/terminalInteraction",
   "item/mcpToolCall/progress",
   "mcpServer/oauthLogin/completed",
@@ -69,6 +67,12 @@ export const visibleNotificationMethods = [
 
 export type VisibleNotificationMethod = (typeof visibleNotificationMethods)[number];
 
+const visibleMethodList: readonly string[] = visibleNotificationMethods;
+
+export function isVisibleNotificationMethod(method: string): method is VisibleNotificationMethod {
+  return visibleMethodList.includes(method);
+}
+
 const warningMethods = new Set<VisibleNotificationMethod>([
   "warning",
   "guardianWarning",
@@ -92,10 +96,6 @@ const formatters: Record<VisibleNotificationMethod, NotificationFormatter> = {
     guardianReviewNotification(ctx, params, "started"),
   "item/autoApprovalReview/completed": (ctx, params) =>
     guardianReviewNotification(ctx, params, "completed"),
-  "rawResponseItem/completed": (ctx, params) =>
-    simpleNotification(ctx, "rawResponseItemCompleted", "info", {
-      item: itemSummary(params.item),
-    }),
   "item/commandExecution/terminalInteraction": terminalInteractionNotification,
   "item/mcpToolCall/progress": (ctx, params) =>
     simpleNotification(ctx, "mcpToolCallProgress", "info", { message: text(params.message) }),

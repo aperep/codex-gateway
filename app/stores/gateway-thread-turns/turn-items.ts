@@ -1,4 +1,4 @@
-import type { ThreadHistoryItem } from "~~/shared/types";
+import { mergeTurnItems } from "~~/shared/thread-history/item-merge";
 import { useGatewayBootstrapStore } from "@/stores/gateway-bootstrap";
 import { useGatewayNavigationStore } from "@/stores/gateway-navigation";
 import { useGatewayThreadTurnsStore } from "@/stores/gateway-thread-turns";
@@ -10,10 +10,8 @@ import {
   pinnedKey,
 } from "@/stores/gateway/thread-utils/identity";
 import { captureSessionEpoch } from "@/utils/session-epoch";
-import { requestThreadItemsPage } from "./transport";
+import { readTurnTimelinePage } from "./read-turn-page";
 import type { Translate } from "./types";
-
-const ITEM_PAGE_LIMIT = 100;
 
 export async function loadTurnItems(t: Translate, turnId: string) {
   const navigation = useGatewayNavigationStore();
@@ -23,7 +21,7 @@ export async function loadTurnItems(t: Translate, turnId: string) {
   const threadId = navigation.selectedThreadId;
   if (hostId === null || threadId === null) return false;
 
-  const turn = views.timelineTurns.find((candidate) => candidate.id === turnId);
+  const turn = views.history?.thread.turns.find((candidate) => candidate.id === turnId);
   if (turn === undefined || turn.itemsView === "full") return true;
   const loadingKey = turns.turnItemsKey(hostId, threadId, turnId);
   if (turns.loadingTurnItemsByKey[loadingKey] === true) return false;
@@ -31,26 +29,13 @@ export async function loadTurnItems(t: Translate, turnId: string) {
   const sessionIsCurrent = captureSessionEpoch();
   turns.setTurnItemsLoading(hostId, threadId, turnId, true);
   try {
-    const items: ThreadHistoryItem[] = [];
-    const seenCursors = new Set<string>();
-    let cursor: string | null = null;
-    do {
-      const page = await requestThreadItemsPage({
-        hostId,
-        threadId,
-        turnId,
-        cursor,
-        limit: ITEM_PAGE_LIMIT,
-      });
-      items.push(...page.items);
-      cursor = page.nextCursor;
-      if (cursor !== null) {
-        if (seenCursors.has(cursor)) {
-          throw new Error("App Server returned a repeated thread item cursor");
-        }
-        seenCursors.add(cursor);
-      }
-    } while (cursor !== null);
+    const { items, nextCursor, complete } = await readTurnTimelinePage({
+      hostId,
+      threadId,
+      turnId,
+      cursor: turn.olderItemsCursor,
+      sessionIsCurrent,
+    });
 
     if (!sessionIsCurrent()) return false;
     const view = views.threadViews[pinnedKey(hostId, threadId)];
@@ -58,11 +43,16 @@ export async function loadTurnItems(t: Translate, turnId: string) {
     if (history === null || history === undefined) return false;
     const nextTurns = history.thread.turns.map((candidate) =>
       String(candidate.id) === turnId
-        ? { ...candidate, items, itemsView: "full" as const }
+        ? {
+            ...candidate,
+            items: mergeTurnItems(items, candidate.items ?? []),
+            itemsView: complete ? ("full" as const) : ("summary" as const),
+            olderItemsCursor: nextCursor,
+          }
         : candidate,
     );
-    // Publish only the complete item sequence. Inserting each page would temporarily move the
-    // final answer and force several virtualizer remeasurements for one disclosure action.
+    // Commit one bounded page atomically. Do not accumulate every page before publishing: a turn
+    // can contain thousands of intermediate items even though only a handful fit the viewport.
     patchThreadView(hostId, threadId, {
       history: { thread: { ...history.thread, turns: nextTurns } },
     });

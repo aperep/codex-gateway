@@ -1,45 +1,47 @@
-import type { HostRecord, RpcEnvelope } from "~~/shared/types";
-import {
-  isAppServerSubAgentThread,
-  parseThreadReadResult,
-  parseThreadResumeResult,
-} from "~~/shared/runtime/app-server";
+import type { HostRecord, RpcEnvelope, ThreadSettingsState } from "~~/shared/types";
+import { isAppServerSubAgentThread, parseThreadResumeResult } from "~~/shared/runtime/app-server";
 import {
   runtimeStatusFromAppThreadStatus,
   runtimeStatusFromSnapshotState,
 } from "~~/shared/thread-runtime-status";
 import { recordFromUnknown } from "~~/shared/utils/records";
-import { CodexRpcClient } from "../infra/rpc/rpc";
 import { bindGatewayUser } from "../state/memory";
 import { threadSnapshotStore } from "../state/thread-snapshots";
 import { threadRuntimeEvents } from "./thread-runtime-events";
 import type { ThreadOpenSnapshot } from "./types";
 import { createThreadNotificationResolvers } from "./notification-rpc-resolvers";
+import type { AgentRpcClient, ProviderAdapter } from "../agent/provider-adapter";
+import { extractThreadSettings } from "../protocol/thread-payload";
 
 export class ThreadController {
-  readonly client: CodexRpcClient;
+  readonly client: AgentRpcClient;
   private operationQueue: Promise<unknown> = Promise.resolve();
   private connected = false;
   private subscribed = false;
   private closed = false;
   private activeMainThread = false;
   private subAgentThread = false;
+  private resumeSettings: ThreadSettingsState | null = null;
 
   constructor(
     readonly host: HostRecord,
     readonly threadId: string,
-    client?: CodexRpcClient,
+    client: AgentRpcClient,
+    readonly provider: ProviderAdapter,
     connected = false,
     subscribed = false,
     private readonly ownsClient = true,
     private readonly onClose?: () => void,
     private readonly onMaterialized?: () => void,
   ) {
-    this.client = client ?? new CodexRpcClient(host);
+    this.client = client;
     this.connected = connected;
     this.subscribed = subscribed;
     const cachedSnapshot = threadSnapshotStore.get(host.id, threadId);
-    if (cachedSnapshot !== null) this.updateMonitoringStateFromSnapshot(cachedSnapshot);
+    if (cachedSnapshot !== null) {
+      this.updateMonitoringStateFromSnapshot(cachedSnapshot);
+      this.resumeSettings = cachedSnapshot.threadSettings;
+    }
     if (this.ownsClient) {
       this.client.on(
         "notification",
@@ -57,7 +59,16 @@ export class ThreadController {
   }
 
   publish(method: string, payload: RpcEnvelope) {
-    return threadRuntimeEvents.record(this.host.id, this.threadId, method, payload);
+    return threadRuntimeEvents.recordNotification(
+      this.host.id,
+      this.threadId,
+      {
+        method,
+        params: payload.params,
+        id: payload.id ?? undefined,
+      },
+      this.provider,
+    );
   }
 
   async ensureConnected() {
@@ -78,21 +89,23 @@ export class ThreadController {
     const method =
       message.method === undefined || message.method === "" ? "notification" : message.method;
     this.updateMonitoringState(method, message);
-    threadRuntimeEvents.record(
+    threadRuntimeEvents.recordNotification(
       this.host.id,
       this.threadId,
-      method,
-      message,
+      {
+        method,
+        params: message.params,
+        id: message.id ?? undefined,
+        emittedAtMs: "emittedAtMs" in message ? message.emittedAtMs : undefined,
+      },
+      this.provider,
       createThreadNotificationResolvers(this.client, this.threadId),
     );
     if (method === "turn/started") this.onMaterialized?.();
   }
 
   handleStderr(text: string) {
-    threadRuntimeEvents.record(this.host.id, this.threadId, "gateway/stderr", {
-      method: "gateway/stderr",
-      params: { text },
-    });
+    threadRuntimeEvents.record(this.host.id, this.threadId, { type: "gateway.stderr", text });
   }
 
   handleClose() {
@@ -100,7 +113,7 @@ export class ThreadController {
     this.subscribed = false;
   }
 
-  async ensureSubscribed() {
+  async ensureSubscribed(force = false) {
     await this.ensureConnected();
     await this.enqueue(async () => {
       // Check and mutation must share the serialized critical section. Two browser peers can
@@ -110,7 +123,7 @@ export class ThreadController {
       // attached; it has no ThreadResumeResponse. Existing threads must still resume once when
       // their materialized snapshot does not yet contain model/effort. This is the app-server's
       // authoritative settings read, not a presentation fallback.
-      if (this.subscribed && this.getOpenSnapshot()?.threadSettings != null) return;
+      if (!force && this.subscribed && this.getOpenSnapshot()?.threadSettings != null) return;
       // Fresh threads never enter this branch: ControllerRegistry keeps thread/start's implicit
       // subscription under a bootstrap owner until turn/started. Calling thread/resume before that
       // point is invalid because app-server has not materialized a rollout yet.
@@ -118,27 +131,12 @@ export class ThreadController {
     });
   }
 
-  async resumeWithInitialTurnsPage(limit: number) {
+  async resumeForHistory() {
     await this.ensureConnected();
     return this.enqueue(async () => {
-      // historyMode belongs to the official Thread DTO, while initialTurnsPage must be specified
-      // before thread/resume returns that DTO. Read metadata without Turns first, then issue one
-      // correctly-shaped resume page. This avoids replaying a legacy JSONL once for summary and a
-      // second time for full items, while paginated histories retain bounded summary hydration.
-      const read = await this.client.request(
-        "thread/read",
-        { threadId: this.threadId, includeTurns: false },
-        120_000,
-        parseThreadReadResult,
-      );
       return this.requestResume({
         threadId: this.threadId,
         excludeTurns: true,
-        initialTurnsPage: {
-          limit,
-          sortDirection: "desc",
-          itemsView: read.thread.historyMode === "paginated" ? "summary" : "full",
-        },
       });
     });
   }
@@ -167,6 +165,10 @@ export class ThreadController {
 
   getOpenSnapshot() {
     return threadSnapshotStore.get(this.host.id, this.threadId);
+  }
+
+  getResumeSettings() {
+    return this.resumeSettings;
   }
 
   enqueue<T>(operation: () => Promise<T>) {
@@ -243,11 +245,20 @@ export class ThreadController {
       parseThreadResumeResult,
     );
     this.subscribed = true;
-    // Do not synthesize thread/settings/updated from thread/resume. The resume DTO only contains
-    // model/effort, while the official settings notification also contains collaborationMode. A
-    // partial event under the official method name can therefore overwrite an already observed
-    // Plan mode. The open snapshot carries resume settings directly and real settings events remain
-    // the sole source for the complete app-server state.
+    const snapshot = this.getOpenSnapshot();
+    // Resume exposes model/effort/mode but not summary. Preserve settings learned from the official
+    // thread/settings/updated notification, then overlay only fields actually carried by resume.
+    // Do not guess a model default here: Gateway's summary opt-in belongs to the start request.
+    this.resumeSettings = {
+      ...snapshot?.threadSettings,
+      ...extractThreadSettings(resumed),
+    };
+    if (snapshot !== null) {
+      this.setOpenSnapshot({ ...snapshot, threadSettings: this.resumeSettings });
+    }
+    // The 0.156.1 ThreadResumeResponse carries the persisted collaboration mode at its top level.
+    // Keep resumeSettings as that response projection; historical notifications are not a second
+    // recovery source and cannot overwrite a mode restored by the protocol.
     return resumed;
   }
 }

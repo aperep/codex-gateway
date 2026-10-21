@@ -1,7 +1,11 @@
-import type { ModelListResult, ProjectRecord, RemoteDirectoryEntry } from "~~/shared/types";
+import type {
+  ModelListResult,
+  ProjectCreateInput,
+  ProjectRecord,
+  RemoteDirectoryEntry,
+} from "~~/shared/types";
 import { gatewayApi } from "@/utils/gateway-api";
 import { useGatewayCatalogStore } from "@/stores/gateway-catalog";
-import { useGatewayConfigStore } from "@/stores/gateway-config";
 import { useGatewayBootstrapStore } from "@/stores/gateway-bootstrap";
 import { useGatewayNavigationStore } from "@/stores/gateway-navigation";
 import { useGatewayThreadViewStore } from "@/stores/gateway-thread-view";
@@ -32,7 +36,7 @@ export function createProjectActions() {
     const bootstrap = useGatewayBootstrapStore();
     const navigation = useGatewayNavigationStore();
     catalog.loadingModels = true;
-    const projectId = navigation.selectedProjectId;
+    const cwd = navigation.selectedCwd;
     const threadId = navigation.selectedThreadId;
     try {
       const response = await gatewayApi<ModelListResult>("/api/models", {
@@ -45,7 +49,7 @@ export function createProjectActions() {
       if (!sessionIsCurrent()) return;
       bootstrap.setError(
         messageFromError(error, bootstrap.t("app.listModelsFailed"), bootstrap.errorLabels),
-        { hostId, projectId, threadId },
+        { hostId, cwd, threadId },
       );
     } finally {
       if (sessionIsCurrent() && navigation.selectedHostId === hostId) catalog.loadingModels = false;
@@ -53,11 +57,11 @@ export function createProjectActions() {
   }
 
   return {
-    async selectProject(projectId: number) {
+    async selectProject(cwd: string) {
       const navigation = useGatewayNavigationStore();
       clearThreadSelection();
-      navigation.selectedProjectId = projectId;
-      writeGatewayRouteSelection({ hostId: navigation.selectedHostId, projectId, threadId: null });
+      navigation.selectedCwd = cwd;
+      writeGatewayRouteSelection({ hostId: navigation.selectedHostId, cwd, threadId: null });
       await navigation.listThreads();
     },
 
@@ -94,10 +98,9 @@ export function createProjectActions() {
       await catalog.listModels();
     },
 
-    async createProject(input: Record<string, unknown>) {
+    async createProject(input: ProjectCreateInput) {
       const sessionIsCurrent = captureSessionEpoch();
       const catalog = useGatewayCatalogStore();
-      const config = useGatewayConfigStore();
       const navigation = useGatewayNavigationStore();
       const project = await gatewayApi<ProjectRecord>("/api/projects", {
         method: "POST",
@@ -105,78 +108,27 @@ export function createProjectActions() {
       });
       if (!sessionIsCurrent()) return project;
       catalog.mergeProjects([project]);
-      upsertConfiguredProject(project);
-      config.setCatalog(catalog.hosts, catalog.projects);
       clearThreadSelection();
       navigation.selectedHostId = project.hostId;
-      navigation.selectedProjectId = project.id;
-      writeGatewayRouteSelection({ hostId: project.hostId, projectId: project.id, threadId: null });
-      await navigation.listThreads();
-      return project;
-    },
-
-    async updateProject(projectId: number, input: Record<string, unknown>) {
-      const sessionIsCurrent = captureSessionEpoch();
-      const catalog = useGatewayCatalogStore();
-      const navigation = useGatewayNavigationStore();
-      const project = await gatewayApi<ProjectRecord>(`/api/projects/${projectId}`, {
-        method: "PATCH",
-        body: input,
-      });
-      if (!sessionIsCurrent()) return project;
-      catalog.projects = catalog.projects.map((item) => (item.id === projectId ? project : item));
-      upsertConfiguredProject(project);
-      catalog.projectDirectoryAvailability = omitKey(
-        catalog.projectDirectoryAvailability,
-        projectId,
-      );
-      if (navigation.selectedProjectId !== projectId) {
-        await navigation.refreshHostProjects(project.hostId);
-        return project;
-      }
-      clearThreadSelection();
-      navigation.selectedHostId = project.hostId;
-      writeGatewayRouteSelection({ hostId: project.hostId, projectId, threadId: null });
-      await navigation.listThreads();
-      return project;
-    },
-
-    async deleteProject(projectId: number) {
-      const sessionIsCurrent = captureSessionEpoch();
-      const catalog = useGatewayCatalogStore();
-      const config = useGatewayConfigStore();
-      const navigation = useGatewayNavigationStore();
-      const project = catalog.projects.find((item) => item.id === projectId);
-      await gatewayApi(`/api/projects/${projectId}`, { method: "DELETE" });
-      if (!sessionIsCurrent()) return;
-      catalog.projects = catalog.projects.filter((item) => item.id !== projectId);
-      catalog.projectDirectoryAvailability = omitKey(
-        catalog.projectDirectoryAvailability,
-        projectId,
-      );
-      config.gatewayConfig.projects = config.gatewayConfig.projects.filter(
-        (item) => item.id !== projectId,
-      );
-      if (navigation.selectedProjectId !== projectId) return;
-      const nextProject =
-        catalog.projects.find((item) => item.hostId === project?.hostId) ??
-        catalog.projects.find((item) => item.hostId === navigation.selectedHostId) ??
-        null;
-      clearThreadSelection();
-      navigation.selectedHostId = project?.hostId ?? navigation.selectedHostId;
-      navigation.selectedProjectId = nextProject?.id ?? null;
+      navigation.selectedCwd = project.remotePath;
       writeGatewayRouteSelection({
-        hostId: navigation.selectedHostId,
-        projectId: navigation.selectedProjectId,
+        hostId: project.hostId,
+        cwd: project.remotePath,
         threadId: null,
       });
-      await navigation.listThreads();
+      // Creating a project explicitly navigates to it, including when its host was registered
+      // without being selected. Load that host's models here instead of relying on host creation
+      // to have navigated and populated the composer as an unrelated side effect.
+      await Promise.all([catalog.listModels(), navigation.listThreads()]);
+      return project;
     },
 
     mergeProjects(projects: ProjectRecord[]) {
       const catalog = useGatewayCatalogStore();
       for (const project of projects) {
-        const index = catalog.projects.findIndex((item) => item.id === project.id);
+        const index = catalog.projects.findIndex(
+          (item) => item.hostId === project.hostId && item.remotePath === project.remotePath,
+        );
         if (index >= 0) catalog.projects[index] = project;
         else catalog.projects.push(project);
       }
@@ -185,22 +137,10 @@ export function createProjectActions() {
     ensureSelectedProject() {
       const catalog = useGatewayCatalogStore();
       const navigation = useGatewayNavigationStore();
-      if (navigation.selectedHostId === null || navigation.selectedProjectId !== null) return;
-      navigation.selectedProjectId =
-        catalog.projects.find((project) => project.hostId === navigation.selectedHostId)?.id ??
-        null;
+      if (navigation.selectedHostId === null || navigation.selectedCwd !== null) return;
+      navigation.selectedCwd =
+        catalog.projects.find((project) => project.hostId === navigation.selectedHostId)
+          ?.remotePath ?? null;
     },
   };
-}
-
-function upsertConfiguredProject(project: ProjectRecord) {
-  const config = useGatewayConfigStore();
-  const index = config.gatewayConfig.projects.findIndex((item) => item.id === project.id);
-  if (index >= 0) config.gatewayConfig.projects[index] = project;
-  else config.gatewayConfig.projects.push(project);
-}
-
-function omitKey<T>(record: Record<number, T>, key: number) {
-  const { [key]: _removed, ...remaining } = record;
-  return remaining;
 }

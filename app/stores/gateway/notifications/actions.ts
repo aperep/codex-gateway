@@ -17,7 +17,6 @@ function threadAction(target: TargetFor<"thread">): NotificationAction {
     run: () => {
       void useGatewayThreadViewStore().openThread(target.threadId, {
         hostId: target.hostId,
-        projectId: target.projectId,
       });
     },
   };
@@ -48,7 +47,6 @@ async function openTmuxMonitor(target: TargetFor<"tmuxMonitor">) {
   if (target.threadId !== null) {
     await useGatewayThreadViewStore().openThread(target.threadId, {
       hostId: target.hostId,
-      projectId: target.projectId,
     });
   } else if (useGatewayNavigationStore().selectedHostId !== target.hostId) {
     await useGatewayCatalogStore().selectHost(target.hostId);

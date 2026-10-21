@@ -14,7 +14,7 @@ export function createFileDocument(input: OpenWorkspaceFileInput) {
   return reactive<FilePreviewDocument>({
     key: fileDocumentKey(input.hostId, input.threadId, input.path),
     hostId: input.hostId,
-    projectId: input.projectId ?? null,
+    cwd: input.cwd ?? null,
     threadId: input.threadId,
     path: input.path,
     title: fileName(input.path),

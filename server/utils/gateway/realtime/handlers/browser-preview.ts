@@ -41,7 +41,7 @@ function browserPreviewTarget(
   // those transport fields into browser.opened.session, which the strict client schema must reject.
   return {
     hostId: request.hostId,
-    projectId: request.projectId,
+    cwd: request.cwd,
     threadId: request.threadId,
     panelId: request.panelId,
     targetUrl: request.targetUrl,

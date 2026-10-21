@@ -4,7 +4,7 @@ import { expectFileGitComparison } from "@/stores/gateway-realtime/response-pars
 
 export async function compareRemoteGitFile(input: {
   hostId: number;
-  projectId: number;
+  cwd: string;
   path: string;
 }): Promise<RemoteGitFileComparison> {
   const response = await useGatewayRealtimeStore().request(

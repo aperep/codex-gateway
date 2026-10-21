@@ -11,11 +11,9 @@ import { hostStore } from "../../utils/gateway/state/hosts";
 import { projectStore } from "../../utils/gateway/state/projects";
 import { threadMetadataStore } from "../../utils/gateway/state/thread-metadata";
 import { threadSnapshotStore } from "../../utils/gateway/state/thread-snapshots";
-import { remoteFiles } from "../../utils/gateway/infra/host-services";
 import { withAllThreadSources } from "../../utils/gateway/protocol/thread-list";
 import { threadProjectDiscovery } from "../../utils/gateway/runtime/thread-project-discovery";
-import type { AppServerThread, GatewayThread, ProjectRecord } from "~~/shared/types";
-import type { HostWithSecret } from "../../utils/gateway/infra/ssh/ssh-types";
+import type { AppServerThread, GatewayThread } from "~~/shared/types";
 import { trimmedOrNull } from "~~/shared/utils/strings";
 import { gatewayThreadFromAppServer } from "../../utils/gateway/protocol/gateway-thread";
 
@@ -27,7 +25,6 @@ export default defineGatewayEventHandler(async (event) => {
     userId === undefined ? null : threadProjectDiscovery.captureGeneration(userId, host.id);
   setGatewayRequestLogContext(event, "threads/list", {
     ...hostLogContext(host),
-    projectId: query.projectId ?? null,
     cwd: query.cwd ?? null,
     limit: query.limit,
     cursor: query.cursor ?? null,
@@ -56,7 +53,6 @@ export default defineGatewayEventHandler(async (event) => {
   }
   const projects = projectStore.list(host.id);
   const indexedThreads = threadMetadataStore.list(host.id, {
-    projectId: query.projectId ?? null,
     cwd: query.cwd ?? null,
   });
   const gatewayThreads = gatewayThreadsForList(
@@ -64,52 +60,23 @@ export default defineGatewayEventHandler(async (event) => {
     page.data,
     threadSnapshotStore.listForHost(host.id).map((record) => record.snapshot.thread),
     indexedThreads,
-    projects,
     query.searchTerm ?? null,
   );
-  const projectDirectoryAvailability = await inspectProjectAvailability(host, projects);
+  // Directory groups describe Codex conversations, including history from a removed cwd.
+  // Listing them needs no SFTP existence check; actual file operations report their own errors.
   return {
     ...page,
     data: gatewayThreads,
     projects,
-    projectDirectoryAvailability,
   };
 });
 
-async function inspectProjectAvailability(
-  host: HostWithSecret,
-  projects: Array<{ id: number; remotePath: string }>,
-) {
-  try {
-    const byPath = await remoteFiles.inspectProjectDirectories(
-      host,
-      projects.map((project) => project.remotePath),
-    );
-    return Object.fromEntries(
-      projects.flatMap((project) => {
-        const availability = byPath.get(project.remotePath.trim());
-        return availability === undefined ? [] : [[project.id, availability]];
-      }),
-    );
-  } catch (error) {
-    // Availability is advisory; an SFTP outage must not hide projects or fail thread listing.
-    console.warn("[gateway] project directory inspection failed", {
-      hostId: host.id,
-      hostName: host.name,
-      error: error instanceof Error ? error.message : String(error),
-    });
-    return {};
-  }
-}
-
 function shouldDiscoverHostProjects(query: {
-  projectId?: number | null;
   cwd?: string | null;
   searchTerm?: string | null;
   cursor?: string | null;
 }) {
   return (
-    (query.projectId === null || query.projectId === undefined) &&
     trimmedOrNull(query.cwd) === null &&
     trimmedOrNull(query.searchTerm) === null &&
     trimmedOrNull(query.cursor) === null
@@ -121,7 +88,6 @@ function gatewayThreadsForList(
   remoteThreads: AppServerThread[],
   cachedThreads: AppServerThread[],
   indexedThreads: ReturnType<typeof threadMetadataStore.list>,
-  projects: ProjectRecord[],
   searchTerm: string | null,
 ) {
   const metadataById = new Map(indexedThreads.map((thread) => [thread.id, thread]));
@@ -137,12 +103,7 @@ function gatewayThreadsForList(
   const normalizedSearch = searchTerm?.trim().toLowerCase() ?? "";
   return [...threadsById.values()]
     .map((thread) => {
-      const metadata = metadataById.get(thread.id);
-      const projectId =
-        metadata?.projectId ??
-        projects.find((project) => project.remotePath === thread.cwd)?.id ??
-        null;
-      return gatewayThreadFromAppServer(hostId, projectId, thread);
+      return gatewayThreadFromAppServer(hostId, thread);
     })
     .filter((thread) => {
       if (!normalizedSearch) {

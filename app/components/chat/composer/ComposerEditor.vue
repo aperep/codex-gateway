@@ -32,7 +32,7 @@ const props = defineProps<{
   references: ComposerFileReference[];
   scopeKey: string;
   hostId: number | null;
-  projectId: number | null;
+  cwd: string | null;
   disabled: boolean;
   placeholder: string;
   limitMessage: string;
@@ -203,7 +203,7 @@ function handleUpdate(update: ViewUpdate) {
 }
 
 function updateMentionQuery(editor: EditorView) {
-  if (props.disabled || props.projectId === null || editor.state.selection.ranges.length !== 1) {
+  if (props.disabled || props.cwd === null || editor.state.selection.ranges.length !== 1) {
     dismissMenu();
     return;
   }
@@ -229,9 +229,9 @@ function scheduleSearch() {
 }
 
 async function search() {
-  if (!menuOpen.value || props.hostId === null || props.projectId === null) return;
+  if (!menuOpen.value || props.hostId === null || props.cwd === null) return;
   const hostId = props.hostId;
-  const projectId = props.projectId;
+  const cwd = props.cwd;
   const generation = searchGeneration;
   loading.value = true;
   searchError.value = null;
@@ -241,7 +241,7 @@ async function search() {
         type: "file.search",
         requestId,
         hostId,
-        projectId,
+        cwd,
         query: query.value,
         cancellationToken,
       }),

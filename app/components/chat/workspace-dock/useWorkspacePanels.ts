@@ -1,8 +1,6 @@
 import { storeToRefs } from "pinia";
 
 import { computed } from "vue";
-import { useGatewayCatalogStore } from "@/stores/gateway-catalog";
-import { projectById } from "@/stores/gateway-catalog/selectors";
 import { useGatewayThreadViewStore } from "@/stores/gateway-thread-view";
 import { useGatewayTerminalStore } from "@/stores/gateway-terminal";
 import { useGatewayBrowserStore } from "@/stores/gateway-browser";
@@ -24,7 +22,6 @@ import { HOST_METRICS_WORKSPACE_PANEL_ID } from "@/stores/gateway/workspace-pane
 
 export function useWorkspacePanels(selection: WorkspacePanelSelection) {
   const { t } = useI18n();
-  const catalog = useGatewayCatalogStore();
   const threadView = useGatewayThreadViewStore();
   const terminalStore = useGatewayTerminalStore();
   const browserStore = useGatewayBrowserStore();
@@ -42,13 +39,10 @@ export function useWorkspacePanels(selection: WorkspacePanelSelection) {
           return session.threadId === selection.selectedThreadId.value;
         if (session.scope === "project") {
           return (
-            selection.selectedThreadId.value === null &&
-            session.projectId === selection.selectedProjectId.value
+            selection.selectedThreadId.value === null && session.cwd === selection.selectedCwd.value
           );
         }
-        return (
-          selection.selectedThreadId.value === null && selection.selectedProjectId.value === null
-        );
+        return selection.selectedThreadId.value === null && selection.selectedCwd.value === null;
       })
       .map((session) => ({ id: terminalWorkspacePanelId(session.sessionId), session })),
   );
@@ -76,7 +70,8 @@ export function useWorkspacePanels(selection: WorkspacePanelSelection) {
       .filter(
         (panel) =>
           panel.hostId === selection.selectedHostId.value &&
-          (panel.projectId ?? null) === (selection.selectedProjectId.value ?? null) &&
+          ((panel.threadId !== null && panel.threadId !== undefined) ||
+            (panel.cwd ?? null) === selection.selectedCwd.value) &&
           (panel.threadId ?? null) === (selection.selectedThreadId.value ?? null),
       )
       .map((panel) => ({ id: browserWorkspacePanelId(panel.panelId), panel })),
@@ -91,7 +86,7 @@ export function useWorkspacePanels(selection: WorkspacePanelSelection) {
     if (hostId === null) return [];
     const scopeKey = workspaceLayoutScopeKey(
       hostId,
-      selection.selectedProjectId.value,
+      selection.selectedCwd.value,
       selection.selectedThreadId.value,
     );
     return hostMetricsPanels.isOpen(scopeKey)
@@ -101,7 +96,7 @@ export function useWorkspacePanels(selection: WorkspacePanelSelection) {
   const gitReviewPanel = computed(() => {
     const scopeKey = workspaceLayoutScopeKey(
       selection.selectedHostId.value,
-      selection.selectedProjectId.value,
+      selection.selectedCwd.value,
       selection.selectedThreadId.value,
     );
     return gitReviewPanels.isOpen(scopeKey) ? [{ id: GIT_REVIEW_WORKSPACE_PANEL_ID }] : [];
@@ -110,7 +105,7 @@ export function useWorkspacePanels(selection: WorkspacePanelSelection) {
   const fileWorkspaceRoot = computed(() => {
     const cwd = currentThread.value?.cwd ?? "";
     if (cwd !== "") return cwd;
-    return projectById(catalog.projects, selection.selectedProjectId.value)?.remotePath ?? "";
+    return selection.selectedCwd.value ?? "";
   });
 
   return {

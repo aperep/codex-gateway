@@ -18,7 +18,9 @@ export class ThreadGoalService {
       tokenBudget?: number | null;
     },
   ) {
-    const params: Record<string, unknown> = { threadId };
+    // These mutations originate in the Gateway UI, not an autonomous agent. App Server
+    // needs explicit provenance to persist them as user instructions; keep it at the RPC boundary.
+    const params: Record<string, unknown> = { threadId, origin: "user" };
     if ("objective" in input) params.objective = input.objective;
     if ("status" in input) params.status = input.status;
     if ("tokenBudget" in input) params.tokenBudget = input.tokenBudget;
@@ -47,7 +49,7 @@ export class ThreadGoalService {
       controller.enqueue(() =>
         controller.client.request(
           "thread/goal/clear",
-          { threadId },
+          { threadId, origin: "user" },
           120_000,
           parseThreadGoalClearResponse,
         ),

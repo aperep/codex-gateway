@@ -1,5 +1,6 @@
 import { match, P } from "ts-pattern";
 import type { RealtimeServerMessage } from "~~/shared/types";
+import { gatewayErrorMessage } from "@/utils/gateway-error";
 import { STALE_THREAD_CURSOR_ERROR_CODE } from "~~/shared/gateway-errors";
 import { gatewayDomainEvents } from "@/stores/gateway/domain-events";
 import { realtimeRequestErrorFromServer } from "./request-errors";
@@ -9,6 +10,7 @@ import { createTerminalRealtimeHandlers } from "./handlers/terminal";
 import { createThreadRealtimeHandlers } from "./handlers/thread";
 import { createHostMetricsRealtimeHandlers } from "./handlers/host-metrics";
 import { createTmuxSessionsRealtimeHandlers } from "./handlers/tmux-sessions";
+import { createHostMfaRealtimeHandlers } from "./handlers/host-mfa";
 import type {
   RealtimeServerMessageHandlerContext,
   RealtimeServerMessageMap,
@@ -28,6 +30,7 @@ export function createRealtimeServerMessageDispatcher(ctx: RealtimeServerMessage
   const notifications = createNotificationRealtimeHandlers(ctx);
   const hostMetrics = createHostMetricsRealtimeHandlers(ctx);
   const tmuxSessions = createTmuxSessionsRealtimeHandlers(ctx);
+  const hostMfa = createHostMfaRealtimeHandlers();
 
   return (message: RealtimeServerMessage) =>
     match(message)
@@ -54,6 +57,7 @@ export function createRealtimeServerMessageDispatcher(ctx: RealtimeServerMessage
       .with({ type: "file.git.workspace.snapshot" }, (response) => ctx.resolveRequest(response))
       .with({ type: "file.search.results" }, (response) => ctx.resolveRequest(response))
       .with({ type: "file.watch.ready" }, (response) => ctx.resolveRequest(response))
+      .with({ type: "project.defaults.snapshot" }, (response) => ctx.resolveRequest(response))
       .with({ type: "file.watch.changed" }, (event) =>
         gatewayDomainEvents.emit("remote-files-changed", {
           hostId: event.hostId,
@@ -71,9 +75,10 @@ export function createRealtimeServerMessageDispatcher(ctx: RealtimeServerMessage
       .with({ type: "host.metrics.status" }, hostMetrics["host.metrics.status"])
       .with({ type: "tmux.sessions.snapshot" }, tmuxSessions["tmux.sessions.snapshot"])
       .with({ type: "tmux.sessions.updated" }, tmuxSessions["tmux.sessions.updated"])
+      .with({ type: "host.mfa.request" }, hostMfa["host.mfa.request"])
       .with({ type: "ready" }, () => handleReady(ctx))
       .with({ type: "config.pinnedThreads.changed" }, () =>
-        gatewayDomainEvents.emit("pinned-threads-invalidated", {}),
+        gatewayDomainEvents.emit("pinned-threads-invalidated"),
       )
       .with({ type: "error" }, (error) => handleRealtimeError(ctx, error))
       .with({ type: "pong" }, ({ nonce }) => ctx.acknowledgePong(nonce))
@@ -81,9 +86,18 @@ export function createRealtimeServerMessageDispatcher(ctx: RealtimeServerMessage
         {
           type: P.union(
             "thread.snapshot",
+            "host.daemon.restarted",
+            "host.upgrades.snapshot",
+            "notification.webPush.configured",
+            "notification.webPush.subscribed",
+            "notification.webPush.unsubscribed",
             "thread.started",
-            "thread.turns.page",
-            "thread.items.page",
+            "thread.timeline.page",
+            "thread.items.result",
+            "thread.attachments.page",
+            "thread.attachment.added",
+            "thread.attachment.removed",
+            "thread.settings.snapshot",
             "turn.start.accepted",
             "turn.steer.accepted",
             "turn.interrupt.accepted",
@@ -104,8 +118,8 @@ function handleReady(ctx: RealtimeServerMessageHandlerContext) {
   ctx.resubscribe();
   void ctx.restoreTerminalSessions();
   if (reconnect) {
-    gatewayDomainEvents.emit("pinned-threads-invalidated", {});
-    gatewayDomainEvents.emit("realtime-reconnected", {});
+    gatewayDomainEvents.emit("pinned-threads-invalidated");
+    gatewayDomainEvents.emit("realtime-reconnected");
   }
 }
 
@@ -114,7 +128,9 @@ function handleRealtimeError(
   message: RealtimeServerMessageMap["error"],
 ) {
   const requestError = realtimeRequestErrorFromServer(
-    message.message,
+    gatewayErrorMessage(message, message.message, {
+      serverShuttingDown: ctx.t("app.appServerShuttingDown"),
+    }),
     message.request !== null && message.request !== undefined && "requestId" in message.request
       ? message.request
       : undefined,

@@ -2,14 +2,12 @@ export type ServerNotificationTarget =
   | {
       kind: "thread";
       hostId: number;
-      projectId: number | null;
       threadId: string;
     }
   | {
       kind: "tmuxMonitor";
       hostId: number;
       monitorId: number;
-      projectId: number | null;
       threadId: string | null;
     };
 

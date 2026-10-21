@@ -12,22 +12,20 @@ import {
   threadKey,
 } from "../sidebar-utils";
 import type { PinnedThreadRecord, ProjectRecord } from "../sidebar-types";
-import { firstNonEmptyString } from "~~/shared/utils/strings";
+import { workspaceDirectoryKey } from "~~/shared/utils/workspace";
 
 export function useSidebarTree(longPressTriggered: Ref<boolean>) {
   const store = useGatewayCatalogStore();
   const navigation = useGatewayNavigationStore();
   const runtime = useGatewayThreadRuntimeStore();
   const threadView = useGatewayThreadViewStore();
-  const { hosts, projects, projectDirectoryAvailability, hostConnectionStatuses } =
-    storeToRefs(store);
+  const { hosts, projects, hostConnectionStatuses } = storeToRefs(store);
   const storedPinnedThreads = useGatewayPinnedThreads();
-  const { threads, openingPinnedThreadKey, selectedHostId, selectedProjectId, selectedThreadId } =
+  const { threads, openingPinnedThreadKey, selectedHostId, selectedCwd, selectedThreadId } =
     storeToRefs(navigation);
   const { unviewedCompletedThreadKeys, threadStatuses } = storeToRefs(runtime);
   const expandedHostIds = ref<Set<number>>(new Set());
-  const expandedProjectIds = ref<Set<number>>(new Set());
-  const expandedMissingProjectHostIds = ref<Set<number>>(new Set());
+  const expandedProjectKeys = ref<Set<string>>(new Set());
   const suppressTreeAutoExpand = ref(false);
   const pinnedThreads = computed(() =>
     sortPinnedThreadsForDisplay(storedPinnedThreads.value, hosts.value),
@@ -50,25 +48,19 @@ export function useSidebarTree(longPressTriggered: Ref<boolean>) {
         pinnedThreadId(thread) === String(selectedThreadId.value),
     );
   });
-  const availableProjectsByHost = computed(() => groupProjectsByHost(false));
-  const missingProjectsByHost = computed(() => groupProjectsByHost(true));
-
-  function groupProjectsByHost(missing: boolean) {
+  const projectsByHost = computed(() => {
     const byHost = new Map<number, typeof projects.value>();
     for (const project of projects.value) {
-      if ((projectDirectoryAvailability.value[project.id] === "missing") !== missing) {
-        continue;
-      }
       const group = byHost.get(project.hostId) ?? [];
       group.push(project);
       byHost.set(project.hostId, group);
     }
     return byHost;
-  }
+  });
 
   function openThread(
     threadId: string,
-    context?: { hostId?: number; projectId?: number | null; replaceRoute?: boolean },
+    context?: { hostId?: number; cwd?: string | null; replaceRoute?: boolean },
   ) {
     if (longPressTriggered.value) {
       return;
@@ -84,7 +76,7 @@ export function useSidebarTree(longPressTriggered: Ref<boolean>) {
     void navigation.openPinnedThread(thread).finally(() => {
       void nextTick().then(() => {
         expandedHostIds.value = new Set();
-        expandedProjectIds.value = new Set();
+        expandedProjectKeys.value = new Set();
         suppressTreeAutoExpand.value = false;
       });
     });
@@ -103,7 +95,7 @@ export function useSidebarTree(longPressTriggered: Ref<boolean>) {
     }
   }
 
-  function selectProject(projectId: number, event?: MouseEvent) {
+  function selectProject(project: ProjectRecord, event?: MouseEvent) {
     if (longPressTriggered.value) {
       return;
     }
@@ -111,36 +103,31 @@ export function useSidebarTree(longPressTriggered: Ref<boolean>) {
       return;
     }
     const isProjectListVisible =
-      projectId === selectedProjectId.value &&
+      project.hostId === selectedHostId.value &&
+      project.remotePath === selectedCwd.value &&
       (selectedThreadId.value === null || selectedThreadId.value === "");
-    const next = new Set(expandedProjectIds.value);
-    if (next.has(projectId) && isProjectListVisible) {
-      next.delete(projectId);
+    const key = workspaceDirectoryKey(project.hostId, project.remotePath);
+    const next = new Set(expandedProjectKeys.value);
+    if (next.has(key) && isProjectListVisible) {
+      next.delete(key);
     } else {
-      next.add(projectId);
+      next.add(key);
     }
-    expandedProjectIds.value = next;
+    expandedProjectKeys.value = next;
     if (!isProjectListVisible) {
-      void store.selectProject(projectId);
+      selectedHostId.value = project.hostId;
+      void store.selectProject(project.remotePath);
     }
-  }
-
-  function toggleMissingProjects(hostId: number) {
-    const next = new Set(expandedMissingProjectHostIds.value);
-    if (next.has(hostId)) next.delete(hostId);
-    else next.add(hostId);
-    expandedMissingProjectHostIds.value = next;
   }
 
   function startThreadInProject(project: ProjectRecord) {
+    // The sidebar quick-start never carries a user model selection, so it must not pin the
+    // catalog default: starting without an override lets the host's own configuration decide.
     void threadView.startThread(
-      {
-        model:
-          firstNonEmptyString([store.defaultModel?.model, store.defaultModel?.id]) ?? undefined,
-      },
+      {},
       {
         hostId: project.hostId,
-        projectId: project.id,
+        cwd: project.remotePath,
       },
     );
   }
@@ -177,12 +164,17 @@ export function useSidebarTree(longPressTriggered: Ref<boolean>) {
   );
 
   watch(
-    selectedProjectId,
-    (projectId) => {
+    // Leaving a pinned conversation can keep the same host/cwd. Observe the pin selection too,
+    // so navigating back to that directory reveals its tree without needing a second click.
+    [selectedHostId, selectedCwd, selectedThreadIsPinned],
+    ([hostId, cwd]) => {
       if (suppressTreeAutoExpand.value) return;
       if (selectedThreadIsPinned.value) return;
-      if (projectId === null) return;
-      expandedProjectIds.value = new Set(expandedProjectIds.value).add(projectId);
+      if (hostId === null || cwd === null) return;
+      expandedHostIds.value = new Set(expandedHostIds.value).add(hostId);
+      expandedProjectKeys.value = new Set(expandedProjectKeys.value).add(
+        workspaceDirectoryKey(hostId, cwd),
+      );
     },
     { immediate: true },
   );
@@ -190,21 +182,8 @@ export function useSidebarTree(longPressTriggered: Ref<boolean>) {
   watch(selectedThreadIsPinned, (isPinned) => {
     if (!isPinned) return;
     expandedHostIds.value = new Set();
-    expandedProjectIds.value = new Set();
+    expandedProjectKeys.value = new Set();
   });
-
-  watch(
-    [selectedProjectId, projectDirectoryAvailability],
-    ([projectId]) => {
-      if (projectId === null || projectDirectoryAvailability.value[projectId] !== "missing") return;
-      const project = projects.value.find((item) => item.id === projectId);
-      if (project === undefined) return;
-      expandedMissingProjectHostIds.value = new Set(expandedMissingProjectHostIds.value).add(
-        project.hostId,
-      );
-    },
-    { immediate: true, deep: true },
-  );
 
   return {
     hosts,
@@ -213,19 +192,16 @@ export function useSidebarTree(longPressTriggered: Ref<boolean>) {
     pinnedThreads,
     hostConnectionStatuses,
     selectedHostId,
-    selectedProjectId,
+    selectedCwd,
     selectedThreadId,
     expandedHostIds,
-    expandedProjectIds,
-    expandedMissingProjectHostIds,
+    expandedProjectKeys,
     projectThreads,
-    availableProjectsByHost,
-    missingProjectsByHost,
+    projectsByHost,
     openThread,
     openPinnedThread,
     selectHost,
     selectProject,
-    toggleMissingProjects,
     startThreadInProject,
     threadRuntimeStatus,
     threadCompletionAttention,

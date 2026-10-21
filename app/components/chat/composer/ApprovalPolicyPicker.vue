@@ -70,13 +70,16 @@ const activeApprovalOption = computed(
         type="button"
         variant="ghost"
         size="lg"
-        class="h-10 shrink-0 gap-1.5 px-1.5 text-sm font-normal text-ink-muted hover:bg-canvas-soft hover:text-ink-secondary sm:gap-2 sm:px-2 md:text-base"
+        class="composer-approval-trigger size-11 shrink-0 gap-2 p-0 text-base font-normal text-ink-muted hover:bg-canvas-soft hover:text-ink-secondary"
+        :aria-label="`${t('app.approvalQuestion')} ${t(`app.${activeApprovalOption.shortLabelKey}`)}`"
+        :title="t(`app.${activeApprovalOption.shortLabelKey}`)"
+        data-testid="approval-policy-trigger"
       >
         <SettingsIcon class="size-5" />
-        <span class="max-w-[4.5rem] truncate sm:max-w-none">{{
+        <span class="composer-approval-label">{{
           t(`app.${activeApprovalOption.shortLabelKey}`)
         }}</span>
-        <ChevronDownIcon class="size-4" />
+        <ChevronDownIcon class="composer-approval-label size-4" />
       </Button>
     </PopoverTrigger>
     <PopoverContent
@@ -112,3 +115,23 @@ const activeApprovalOption = computed(
     </PopoverContent>
   </Popover>
 </template>
+
+<style scoped>
+/* Keep the permission menu reachable without reserving another toolbar row. The composer is
+   the query container: a desktop Dockview pane can be as narrow as a mobile screen. Hide only
+   the trigger text here, rather than hiding the whole picker in the parent toolbar. */
+.composer-approval-label {
+  display: none;
+}
+
+@container (min-width: 44rem) {
+  .composer-approval-trigger {
+    width: auto;
+    padding-inline: 0.5rem;
+  }
+
+  .composer-approval-label {
+    display: inline;
+  }
+}
+</style>

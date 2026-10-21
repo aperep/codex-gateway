@@ -5,8 +5,6 @@ export type {
   HostUpdateInput,
   ProjectCreateInput,
   ProjectRecord,
-  ProjectDirectoryAvailability,
-  ProjectUpdateInput,
   RpcEnvelope,
   GatewayEvent,
 } from "./types/records";
@@ -23,18 +21,24 @@ export type {
   ThreadGoal,
   ThreadGoalStatus,
   ThreadGoalTimelineItem,
+  AppServerTimelineEntry,
+  AppServerTimelinePage,
+  ThreadAttachment,
+  ThreadAttachmentsPage,
   ThreadOpenResult,
   ThreadRuntimeStatus,
   ThreadRuntimeStatusUpdate,
   ThreadCollaborationMode,
   ThreadSettingsState,
   ThreadTokenUsageState,
-  ThreadTurnsPageResult,
-  ThreadItemsPageResult,
   MisalignmentErrorDetails,
   TokenUsageBreakdown,
   ReasoningEffort,
+  ReasoningSummary,
 } from "./types/thread";
+export type { AgentProviderId, AgentProviderOption } from "./agent/providers";
+export { agentProviderIdSchema, agentProviderIds, agentProviderOptions } from "./agent/providers";
+export type { AgentProjectDefaults } from "./types/agent-defaults";
 export type {
   GatewayMcpServerStatus,
   McpAuthStatus,

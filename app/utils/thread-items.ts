@@ -1,18 +1,33 @@
 import type { ThreadHistoryItem } from "~~/shared/types";
 import { recordFromUnknown } from "~~/shared/utils/records";
+import {
+  asyncQuestionsForItem,
+  readableAsyncQuestionReply,
+} from "~~/shared/thread-history/async-user-questions";
 
 export function threadItemText(item: ThreadHistoryItem) {
   if (item.type === "userMessage") {
-    return (Array.isArray(item.content) ? item.content : [])
+    const text = (Array.isArray(item.content) ? item.content : [])
       .map((part) => {
         const record = recordFromUnknown(part);
         return textValue(record?.text) || textValue(record?.content);
       })
       .filter(Boolean)
       .join("\n");
+    return readableAsyncQuestionReply(text) ?? text;
   }
   if (item.type === "agentMessage" || item.type === "plan") {
-    return textValue(item.text);
+    // Codex's request_user_input_async intentionally stores the same question
+    // twice: the protocol text is a replayable summary, while `questions` is
+    // the interactive UI payload. Keep both fields in the history DTO, but
+    // render only the structured card when it is available. Rendering this
+    // text as well creates the duplicate plain-text question shown above the
+    // card and also makes the virtual row larger than the actual content.
+    if (item.type === "agentMessage" && asyncQuestionsForItem(item).length > 0) {
+      return "";
+    }
+    const text = textValue(item.text);
+    return readableAsyncQuestionReply(text) ?? text;
   }
   if (item.type === "reasoning") {
     const summary = Array.isArray(item.summary) ? item.summary : [];

@@ -4,6 +4,12 @@ export function hostById(hosts: HostRecord[], hostId: number | null) {
   return hostId === null ? null : (hosts.find((host) => host.id === hostId) ?? null);
 }
 
-export function projectById(projects: ProjectRecord[], projectId: number | null) {
-  return projectId === null ? null : (projects.find((project) => project.id === projectId) ?? null);
+export function projectForDirectory(
+  projects: ProjectRecord[],
+  hostId: number | null,
+  cwd: string | null,
+) {
+  return (
+    projects.find((project) => project.hostId === hostId && project.remotePath === cwd) ?? null
+  );
 }

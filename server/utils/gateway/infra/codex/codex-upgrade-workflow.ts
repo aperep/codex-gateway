@@ -1,199 +1,88 @@
 import { SUPPORTED_CODEX_VERSION, isCodexVersionAtLeast } from "./codex-version";
 import { hostLifecycleBus } from "../../state/host-events";
 import type { HostWithSecret, RemoteCodexVersionState } from "../ssh/ssh-types";
-import type { AppServerRuntimeProbe } from "./app-server-runtime-probe";
+import type { CodexDaemon } from "./codex-daemon";
 import type { CodexUpgrader } from "./codex-upgrader";
-import { CodexUpgradeQueue } from "./codex-upgrade-queue";
+import { CodexUpgradeCoordinator } from "./codex-upgrade-queue";
 import type { CodexVersionChecker } from "./codex-version-checker";
 import { codexUpgradeLog } from "./codex-upgrade-log";
-import type { CodexUpgradeResources } from "./codex-upgrade-resources";
+import { hostUpgradeState } from "../../state/host-upgrades";
 
 export class CodexUpgradeWorkflow {
-  private readonly queue = new CodexUpgradeQueue();
+  private readonly coordinator = new CodexUpgradeCoordinator();
 
   constructor(
-    private readonly runtime: AppServerRuntimeProbe,
+    private readonly daemon: CodexDaemon,
     private readonly upgrader: CodexUpgrader,
     private readonly versionChecker: CodexVersionChecker,
   ) {}
 
-  async repair(host: HostWithSecret): Promise<RemoteCodexVersionState> {
-    return await this.runExclusive(host, async (resources, attempt) => {
-      const beforeVersion = await this.readVersionForRepair(host);
-      await this.stopRuntimeIfPresent(host);
-      const version = await this.upgrader.upgrade(
-        host,
-        SUPPORTED_CODEX_VERSION,
-        resources,
-        attempt,
-      );
-      await this.runtime.ensureStoppedAfterUpgrade(host);
-
-      return {
-        version,
-        appServerVersion: null,
-        supportedVersion: SUPPORTED_CODEX_VERSION,
-        beforeVersion,
-        upgraded: true,
-      };
-    });
-  }
-
-  async upgradeOutdatedCli(
-    host: HostWithSecret,
-    supportedVersion: string,
-    observedBeforeVersion: string,
-  ): Promise<RemoteCodexVersionState> {
-    return await this.runExclusive(host, async (resources, attempt) => {
-      // Hosts can wait in this queue for several minutes. Re-read both CLI and app-server state
-      // when this Host reaches the front so a newly started thread is never interrupted and an
-      // externally completed upgrade is not repeated.
-      const beforeVersion = await this.versionChecker.readVersionOrRecoverableMissing(host);
-      const runtimeState = await this.runtime.readState(host);
-      const currentRuntimeVersion = runtimeState.appServerVersion ?? beforeVersion;
-      const cliVersionSupported = isCodexVersionAtLeast(beforeVersion, supportedVersion);
-      const runtimeVersionSupported = isCodexVersionAtLeast(
-        currentRuntimeVersion,
-        supportedVersion,
-      );
-      codexUpgradeLog("remote version inspected", host, {
-        observedVersion: beforeVersion,
-        appServerVersion: runtimeState.appServerVersion,
-        targetVersion: supportedVersion,
-        runtimeRunning: runtimeState.running,
-      });
-
-      if (runtimeState.running && !runtimeVersionSupported) {
-        if (await this.runtime.hasActiveLoadedThread(host)) {
-          throw new Error(
-            `Remote Codex runtime ${currentRuntimeVersion} is below supported ${supportedVersion}, but a loaded thread is active`,
-          );
-        }
-      }
-
-      if (cliVersionSupported) {
-        if (runtimeState.running && !runtimeVersionSupported) {
-          await this.runtime.terminateUnmanaged(host);
-        }
-        hostLifecycleBus.emit({
-          hostId: host.id,
-          status: runtimeVersionSupported ? "connecting" : "restarting",
-          message: runtimeVersionSupported
-            ? `${hostDisplayName(host)} 的远端 Codex 已是最新版本 ${beforeVersion}`
-            : `${hostDisplayName(host)} 的远端 Codex CLI 已是 ${beforeVersion}，正在重启旧 app-server ${currentRuntimeVersion}`,
-        });
-        codexUpgradeLog("installation skipped", host, {
+  async ensure(host: HostWithSecret, repair = false): Promise<RemoteCodexVersionState> {
+    // Re-read after the physical-target lock: different Gateway users can reference the same
+    // remote account. Only the first needs to upload; subsequent aliases reuse the selected daemon.
+    return await this.coordinator.run(host, async (attempt) => {
+      const resources = this.upgrader.createResources(host);
+      let installationCompleted = false;
+      try {
+        const installed = await this.versionChecker.readVersionOrRecoverableMissing(host);
+        const beforeVersion = installed.version;
+        const installRequired =
+          repair ||
+          installed.installationLayout !== "standalone" ||
+          !isCodexVersionAtLeast(beforeVersion, SUPPORTED_CODEX_VERSION);
+        let version = beforeVersion;
+        codexUpgradeLog("remote version inspected", host, {
           observedVersion: beforeVersion,
-          appServerVersion: runtimeState.appServerVersion,
-          targetVersion: supportedVersion,
-          runtimeRestartRequired: runtimeState.running && !runtimeVersionSupported,
+          installationLayout: installed.installationLayout,
+          targetVersion: SUPPORTED_CODEX_VERSION,
         });
-        return {
-          version: beforeVersion,
-          appServerVersion: runtimeVersionSupported ? runtimeState.appServerVersion : null,
-          supportedVersion,
-          beforeVersion: observedBeforeVersion,
-          upgraded: false,
-        };
-      }
-
-      const version = await this.install(host, supportedVersion, beforeVersion, resources, attempt);
-      return {
-        version,
-        appServerVersion: null,
-        supportedVersion,
-        beforeVersion,
-        upgraded: true,
-      };
-    });
-  }
-
-  private async install(
-    host: HostWithSecret,
-    supportedVersion: string,
-    beforeVersion: string,
-    resources: CodexUpgradeResources,
-    attempt: number,
-  ) {
-    codexUpgradeLog("upgrade required", host, {
-      observedVersion: beforeVersion,
-      targetVersion: supportedVersion,
-    });
-    hostLifecycleBus.emit({
-      hostId: host.id,
-      status: "upgrading",
-      message: `正在为 ${hostDisplayName(host)} 准备 Codex ${supportedVersion} 官方 npm 安装包`,
-    });
-    const version = await this.upgrader.withPreparedUpgrade(
-      host,
-      supportedVersion,
-      resources,
-      attempt,
-      async (install) => {
-        const latestRuntimeState = await this.runtime.readState(host);
-        if (latestRuntimeState.running) {
-          if (await this.runtime.hasActiveLoadedThread(host)) {
-            throw new Error(
-              `Remote Codex runtime is below supported ${supportedVersion}, but a loaded thread became active while waiting to upgrade`,
-            );
+        if (installRequired) {
+          hostUpgradeState.begin(host, SUPPORTED_CODEX_VERSION);
+          hostLifecycleBus.emit({
+            hostId: host.id,
+            status: "upgrading",
+            message: `正在离线安装 ${host.name} 的 Codex ${SUPPORTED_CODEX_VERSION}`,
+          });
+          // Keep the old daemon running during download/SFTP/extraction. Gateway supplies an
+          // offline CLI package because remote hosts may have no Internet; only the official
+          // daemon update below may replace/drain the running server.
+          version = await this.upgrader.upgrade(host, SUPPORTED_CODEX_VERSION, resources, attempt);
+          if (!isCodexVersionAtLeast(version, SUPPORTED_CODEX_VERSION)) {
+            throw new Error(`Remote Codex upgraded to unsupported version ${version}`);
           }
-          await this.runtime.terminateUnmanaged(host);
+          installationCompleted = true;
+          hostUpgradeState.update(host, { phase: "restarting" });
         }
-        hostLifecycleBus.emit({
-          hostId: host.id,
-          status: "upgrading",
-          message: `正在离线升级 ${hostDisplayName(host)} 的远端 Codex ${beforeVersion} -> ${supportedVersion}`,
+
+        const daemon = await this.daemon.ensureVersion(host, version, () => {
+          if (!installRequired) hostUpgradeState.begin(host, version);
+          hostUpgradeState.update(host, { phase: "restarting" });
+          hostLifecycleBus.emit({
+            hostId: host.id,
+            status: "restarting",
+            message: `正在通过官方升级流程更新 ${host.name} 的 Codex daemon 至 ${version}`,
+          });
+          codexUpgradeLog("official daemon update started", host, { targetVersion: version });
         });
-        return await install();
-      },
-    );
-    await this.runtime.ensureStoppedAfterUpgrade(host);
-    if (!isCodexVersionAtLeast(version, supportedVersion)) {
-      throw new Error(
-        `Remote Codex upgraded to ${version}, still below supported ${supportedVersion}`,
-      );
-    }
-    hostLifecycleBus.emit({
-      hostId: host.id,
-      status: "restarting",
-      message: `${hostDisplayName(host)} 的远端 Codex 已升级到 ${version}，正在重启 app-server`,
+        codexUpgradeLog("daemon ready", host, {
+          appServerVersion: daemon.version,
+          updated: daemon.updated,
+        });
+        hostUpgradeState.finish(host, false);
+        return {
+          version,
+          installationLayout: "standalone",
+          appServerVersion: daemon.version,
+          supportedVersion: SUPPORTED_CODEX_VERSION,
+          beforeVersion,
+          upgraded: installRequired || daemon.updated,
+        };
+      } catch (error) {
+        hostUpgradeState.finish(host, true);
+        throw error;
+      } finally {
+        await resources.dispose(installationCompleted);
+      }
     });
-    return version;
   }
-
-  private async runExclusive<T>(
-    host: HostWithSecret,
-    work: (resources: CodexUpgradeResources, attempt: number) => Promise<T>,
-  ) {
-    if (this.queue.busy) {
-      hostLifecycleBus.emit({
-        hostId: host.id,
-        status: "upgrading",
-        message: `${hostDisplayName(host)} 正在等待 Codex 升级队列`,
-      });
-    }
-    const resources = this.upgrader.createResources(host);
-    try {
-      return await this.queue.run(host, (attempt) => work(resources, attempt));
-    } finally {
-      await resources.dispose();
-    }
-  }
-
-  private async readVersionForRepair(host: HostWithSecret) {
-    try {
-      return await this.versionChecker.readVersionOrRecoverableMissing(host);
-    } catch {
-      return "0.0.0";
-    }
-  }
-
-  private async stopRuntimeIfPresent(host: HostWithSecret) {
-    const runtimeState = await this.runtime.readState(host);
-    if (runtimeState.running) await this.runtime.terminateUnmanaged(host);
-  }
-}
-
-function hostDisplayName(host: HostWithSecret) {
-  return host.name || host.sshHost;
 }

@@ -22,7 +22,6 @@ import FileWorkspaceSidebar from "./FileWorkspaceSidebar.vue";
 const props = defineProps<{
   layout: "desktop" | "mobile";
   hostId: number;
-  projectId: number | null;
   threadId: string;
   rootPath: string;
   active: boolean;
@@ -44,7 +43,7 @@ function openFile(path: string, view?: "source" | "changes") {
   mobileTreeOpen.value = false;
   void fileWorkspace.openFile({
     hostId: props.hostId,
-    projectId: props.projectId,
+    cwd: props.rootPath,
     threadId: props.threadId,
     path,
     view,
@@ -58,7 +57,6 @@ function openFile(path: string, view?: "source" | "changes") {
       <template #tree>
         <FileWorkspaceSidebar
           :host-id="hostId"
-          :project-id="projectId"
           :thread-id="threadId"
           :root-path="rootPath"
           :visible="active"
@@ -72,7 +70,6 @@ function openFile(path: string, view?: "source" | "changes") {
             :documents="documents"
             :active-path="scope?.activePath ?? null"
             :host-id="hostId"
-            :project-id="projectId"
             :root-path="rootPath"
             @activate="fileWorkspace.activateFile(hostId, threadId, $event)"
             @close="guards.requestClose"
@@ -113,7 +110,6 @@ function openFile(path: string, view?: "source" | "changes") {
             :documents="documents"
             :active-path="scope?.activePath ?? null"
             :host-id="hostId"
-            :project-id="projectId"
             :root-path="rootPath"
             @activate="fileWorkspace.activateFile(hostId, threadId, $event)"
             @close="guards.requestClose"
@@ -143,7 +139,6 @@ function openFile(path: string, view?: "source" | "changes") {
           </SheetHeader>
           <FileWorkspaceSidebar
             :host-id="hostId"
-            :project-id="projectId"
             :thread-id="threadId"
             :root-path="rootPath"
             :visible="mobileTreeOpen"

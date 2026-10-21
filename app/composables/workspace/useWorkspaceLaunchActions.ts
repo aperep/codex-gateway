@@ -3,7 +3,7 @@ import { computed } from "vue";
 import { useGatewayTerminalTransport } from "@/composables/terminal/useGatewayTerminalTransport";
 import { createUuid } from "@/lib/uuid";
 import { useGatewayCatalogStore } from "@/stores/gateway-catalog";
-import { hostById, projectById } from "@/stores/gateway-catalog/selectors";
+import { hostById, projectForDirectory } from "@/stores/gateway-catalog/selectors";
 import { useGatewayBrowserStore } from "@/stores/gateway-browser";
 import { useGatewayNavigationStore } from "@/stores/gateway-navigation";
 import { useGatewayThreadViewStore } from "@/stores/gateway-thread-view";
@@ -23,9 +23,11 @@ export function useWorkspaceLaunchActions() {
   const terminal = useGatewayTerminalTransport();
   const hostMetricsPanels = useGatewayHostMetricsPanelStore();
   const { hosts, projects } = storeToRefs(gateway);
-  const { selectedHostId, selectedProjectId, selectedThreadId } = storeToRefs(navigation);
+  const { selectedHostId, selectedCwd, selectedThreadId } = storeToRefs(navigation);
   const selectedHost = computed(() => hostById(hosts.value, selectedHostId.value));
-  const selectedProject = computed(() => projectById(projects.value, selectedProjectId.value));
+  const selectedProject = computed(() =>
+    projectForDirectory(projects.value, selectedHostId.value, selectedCwd.value),
+  );
 
   function openTerminal() {
     if (selectedHostId.value === null || selectedHost.value === null) return;
@@ -34,20 +36,18 @@ export function useWorkspaceLaunchActions() {
       void terminal.openTerminal({
         scope: "thread",
         hostId: selectedHostId.value,
-        projectId: selectedProjectId.value,
         threadId: selectedThreadId.value,
-        cwd: thread?.cwd ?? selectedProject.value?.remotePath ?? null,
+        cwd: thread?.cwd ?? selectedCwd.value,
         title: titleForThread(thread ?? { id: selectedThreadId.value }),
       });
       return;
     }
-    if (selectedProject.value !== null) {
+    if (selectedCwd.value !== null) {
       void terminal.openTerminal({
         scope: "project",
-        hostId: selectedProject.value.hostId,
-        projectId: selectedProject.value.id,
-        cwd: selectedProject.value.remotePath,
-        title: selectedProject.value.name,
+        hostId: selectedHostId.value,
+        cwd: selectedCwd.value,
+        title: selectedProject.value?.name ?? selectedCwd.value,
       });
       return;
     }
@@ -66,7 +66,7 @@ export function useWorkspaceLaunchActions() {
       title: browserTitle(targetUrl),
       targetUrl,
       hostId: selectedHostId.value,
-      projectId: selectedProjectId.value,
+      cwd: selectedCwd.value,
       threadId: selectedThreadId.value,
     });
     layout.requestPanelActivation(browserWorkspacePanelId(panelId));
@@ -76,7 +76,7 @@ export function useWorkspaceLaunchActions() {
     if (selectedHostId.value === null) return;
     const scopeKey = workspaceLayoutScopeKey(
       selectedHostId.value,
-      selectedProjectId.value,
+      selectedCwd.value,
       selectedThreadId.value,
     );
     hostMetricsPanels.open(scopeKey);

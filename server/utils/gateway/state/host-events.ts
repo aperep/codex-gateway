@@ -1,4 +1,5 @@
 import { currentGatewayUserId, runWithGatewayUser } from "./memory";
+import type { HostUpgradeProgress } from "~~/shared/host-upgrade";
 
 export type HostLifecycleStatus =
   | "checkingVersion"
@@ -6,13 +7,15 @@ export type HostLifecycleStatus =
   | "restarting"
   | "connecting"
   | "connected"
-  | "failed";
+  | "failed"
+  | "mfaRequired";
 
 export interface HostLifecycleEvent {
   hostId: number;
   status: HostLifecycleStatus;
   message: string;
   createdAt: string;
+  upgradeProgress?: HostUpgradeProgress | null;
 }
 
 type HostLifecycleSubscriber = (event: HostLifecycleEvent) => void;

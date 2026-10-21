@@ -1,5 +1,24 @@
 import type { GatewayEvent, ProjectRecord } from "./records";
-import type { ThreadHistoryItem, ThreadTimelineHistoryState } from "../thread-history/types";
+import type { ThreadTimelineHistoryState } from "../thread-history/types";
+import type { AgentProviderId } from "../agent/providers";
+import type { AppServerThread } from "../runtime/app-server";
+import type { ReasoningSummary } from "../reasoning-summary";
+import type { UploadedFileRecord } from "./files";
+
+export type { ReasoningSummary } from "../reasoning-summary";
+
+export type {
+  AppServerSessionSource,
+  AppServerSubAgentSource,
+  AppServerThread,
+  AppServerThreadSection,
+  AppServerThreadStatus,
+  AppServerTurn,
+  AppServerTimelineEntry,
+  AppServerTimelinePage,
+  CodexErrorInfo,
+  MisalignmentErrorDetails,
+} from "../runtime/app-server";
 
 export type ThreadRuntimeStatus = "idle" | "running" | "completed" | "failed" | "interrupted";
 
@@ -51,28 +70,24 @@ export interface ThreadOpenResult {
   runtimeStatus?: ThreadRuntimeStatus | null;
   threadSettings?: ThreadSettingsState | null;
   tokenUsage?: ThreadTokenUsageState | null;
-  projectId?: number | null;
   project?: ProjectRecord | null;
-  turnsPage: {
-    nextCursor: string | null;
-    backwardsCursor: string | null;
-  };
+  /** Cursor for the oldest currently cached timeline page; null means no older page exists. */
+  oldestTimelineCursor: string | null;
   recentEvents: GatewayEvent[];
 }
 
-export interface ThreadTurnsPageResult {
-  history: ThreadTimelineHistoryState;
-  turnsPage: {
-    nextCursor: string | null;
-    backwardsCursor: string | null;
-  };
+/** Persisted by the official app-server thread attachment store. */
+export interface ThreadAttachment {
+  id: string;
+  attachmentType: string;
+  identityKey: string;
+  payload: unknown;
+  createdAt: number;
 }
 
-export interface ThreadItemsPageResult {
-  turnId: string;
-  items: ThreadHistoryItem[];
+export interface ThreadAttachmentsPage {
+  data: ThreadAttachment[];
   nextCursor: string | null;
-  backwardsCursor: string | null;
 }
 
 export type ApprovalPolicy = "untrusted" | "on-request" | "never";
@@ -90,6 +105,7 @@ export interface ThreadCollaborationMode {
 export interface ThreadSettingsState {
   model?: string | null;
   effort?: ReasoningEffort | null;
+  summary?: ReasoningSummary | null;
   approvalPolicy?: ApprovalPolicy | null;
   collaborationMode?: ThreadCollaborationMode | null;
 }
@@ -103,130 +119,9 @@ export interface TokenUsageBreakdown {
   reasoningOutputTokens: number;
 }
 
-export type AppServerThreadStatus =
-  | { type: "notLoaded" }
-  | { type: "idle" }
-  | { type: "systemError" }
-  | { type: "active"; activeFlags: Array<"waitingOnApproval" | "waitingOnUserInput"> };
-
-export type AppServerSessionSource =
-  | "cli"
-  | "vscode"
-  | "exec"
-  | "appServer"
-  | "unknown"
-  | { custom: string }
-  | { subAgent: AppServerSubAgentSource };
-
-export type AppServerSubAgentSource =
-  | "review"
-  | "compact"
-  | "memory_consolidation"
-  | { other: string }
-  | {
-      thread_spawn: {
-        parent_thread_id: string;
-        depth: number;
-        agent_path: string | null;
-        agent_nickname: string | null;
-        agent_role: string | null;
-      };
-    };
-
-export interface AppServerTurn {
-  id: string;
-  items: ThreadHistoryItem[];
-  itemsView: "notLoaded" | "summary" | "full";
-  status: "completed" | "interrupted" | "failed" | "inProgress";
-  error: {
-    message: string;
-    codexErrorInfo: CodexErrorInfo | null;
-    additionalDetails: string | null;
-    misalignment: MisalignmentErrorDetails | null;
-  } | null;
-  startedAt: number | null;
-  completedAt: number | null;
-  durationMs: number | null;
-}
-
-export interface MisalignmentErrorDetails {
-  errorType: string | null;
-  detailedExplanation: string | null;
-  steer: { message: string } | null;
-}
-
-export type CodexErrorInfo =
-  | "contextWindowExceeded"
-  | "sessionBudgetExceeded"
-  | "usageLimitExceeded"
-  | "rateLimitExceeded"
-  | "serverOverloaded"
-  | "cyberPolicy"
-  | "misalignmentPolicyViolation"
-  | "internalServerError"
-  | "unauthorized"
-  | "badRequest"
-  | "threadRollbackFailed"
-  | "sandboxError"
-  | "other"
-  | { httpConnectionFailed: { httpStatusCode: number | null } }
-  | { responseStreamConnectionFailed: { httpStatusCode: number | null } }
-  | { responseStreamDisconnected: { httpStatusCode: number | null } }
-  | { responseTooManyFailedAttempts: { httpStatusCode: number | null } }
-  | { activeTurnNotSteerable: { turnKind: "review" | "compact" } };
-
-export interface AppServerThreadSection {
-  id: string;
-  name: string;
-  appearance: {
-    icon: string | null;
-    color: string | null;
-  } | null;
-}
-
-/** Exact Codex 0.153 Thread DTO for the experimental API negotiated by Gateway. */
-export interface AppServerThread {
-  id: string;
-  extra: Record<never, never> | null;
-  sessionId: string;
-  forkedFromId: string | null;
-  parentThreadId: string | null;
-  preview: string;
-  ephemeral: boolean;
-  section: AppServerThreadSection | null;
-  sectionEnteredAt: number | null;
-  projectId: string | null;
-  historyMode: "legacy" | "paginated";
-  modelProvider: string;
-  model: string | null;
-  reasoningEffort: ReasoningEffort | null;
-  createdAt: number;
-  updatedAt: number;
-  recencyAt: number | null;
-  status: AppServerThreadStatus;
-  path: string | null;
-  cwd: string;
-  cliVersion: string;
-  source: AppServerSessionSource;
-  canAcceptDirectInput: boolean | null;
-  threadSource: string | null;
-  agentNickname: string | null;
-  agentRole: string | null;
-  gitInfo: {
-    sha: string | null;
-    branch: string | null;
-    originUrl: string | null;
-  } | null;
-  name: string | null;
-  turns: AppServerTurn[];
-}
-
 /** Browser/server projection with user-scoped Gateway navigation metadata. */
-export type GatewayThread = Omit<AppServerThread, "projectId"> & {
-  /** App-server's global experimental project identity; never use it as a Gateway SQLite id. */
-  appServerProjectId: string | null;
+export type GatewayThread = AppServerThread & {
   hostId: number;
-  projectId: number | null;
   pinned: boolean;
   title: string | null;
 };
@@ -245,8 +140,10 @@ export interface FileReference {
 }
 
 export interface ComposerTurnOptions {
+  provider?: AgentProviderId;
   model?: string | null;
   effort?: ReasoningEffort | null;
+  summary?: ReasoningSummary | null;
   approvalPolicy?: ApprovalPolicy | null;
   collaborationMode?: ThreadCollaborationMode | null;
   images?: Array<{
@@ -254,12 +151,6 @@ export interface ComposerTurnOptions {
     url?: string;
     detail?: "low" | "high" | "auto" | "original";
   }>;
-  files?: Array<{
-    path: string;
-    name: string;
-    mimeType?: string | null;
-    size: number;
-    isImage: boolean;
-  }>;
+  files?: UploadedFileRecord[];
   references?: FileReference[];
 }

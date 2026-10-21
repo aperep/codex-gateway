@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import type { GatewayConfig } from "~~/shared/types";
 import { defaultGatewayConfig } from "../../../../shared/config";
 import { gatewayDatabase, gatewayDatabaseExists } from "../storage/database";
-import { parseGatewayConfig } from "../http/validation/config";
+import { migrateStoredConfig } from "../config/stored-config-migration";
 import {
   decryptJson,
   encryptJson,
@@ -142,10 +142,11 @@ export const userStore = {
     ) {
       return defaultGatewayConfig();
     }
-    return {
-      ...defaultGatewayConfig(),
-      ...parseGatewayConfig(decryptJson(String(row.encrypted_config_json))),
-    };
+    const { config, migrated } = migrateStoredConfig(
+      decryptJson(String(row.encrypted_config_json)),
+    );
+    if (migrated) this.saveConfig(userId, config);
+    return config;
   },
 
   saveConfig(userId: number, config: GatewayConfig) {
@@ -179,16 +180,19 @@ export const userStore = {
         `,
       )
       .all();
-    return rows.map((row) => ({
-      user: {
-        id: Number(row.id),
-        username: String(row.username),
-      },
-      config: {
-        ...defaultGatewayConfig(),
-        ...parseGatewayConfig(decryptJson(String(row.encrypted_config_json))),
-      },
-    }));
+    return rows.map((row) => {
+      const { config, migrated } = migrateStoredConfig(
+        decryptJson(String(row.encrypted_config_json)),
+      );
+      if (migrated) this.saveConfig(Number(row.id), config);
+      return {
+        user: {
+          id: Number(row.id),
+          username: String(row.username),
+        },
+        config,
+      };
+    });
   },
 };
 

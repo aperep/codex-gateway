@@ -1,6 +1,6 @@
 export interface GatewayRouteSelection {
   hostId: number | null;
-  projectId: number | null;
+  cwd: string | null;
   threadId: string | null;
 }
 
@@ -18,18 +18,18 @@ function stringFromQuery(value: string | null) {
 
 export function readGatewayRouteSelection(): GatewayRouteSelection {
   if (!import.meta.client) {
-    return { hostId: null, projectId: null, threadId: null };
+    return { hostId: null, cwd: null, threadId: null };
   }
   const params = new URLSearchParams(window.location.search);
   return {
     hostId: numberFromQuery(params.get("hostId")),
-    projectId: numberFromQuery(params.get("projectId")),
+    cwd: stringFromQuery(params.get("cwd")),
     threadId: stringFromQuery(params.get("threadId")),
   };
 }
 
 export function hasGatewayRouteSelection(selection = readGatewayRouteSelection()) {
-  return selection.hostId !== null || selection.projectId !== null || selection.threadId !== null;
+  return selection.hostId !== null || selection.cwd !== null || selection.threadId !== null;
 }
 
 export function writeGatewayRouteSelection(
@@ -42,7 +42,8 @@ export function writeGatewayRouteSelection(
 
   const url = new URL(window.location.href);
   setRouteParam(url, "hostId", selection.hostId);
-  setRouteParam(url, "projectId", selection.projectId);
+  url.searchParams.delete("projectId");
+  setRouteParam(url, "cwd", selection.cwd);
   setRouteParam(url, "threadId", selection.threadId);
 
   const nextUrl = `${url.pathname}${url.search}${url.hash}`;
@@ -51,8 +52,12 @@ export function writeGatewayRouteSelection(
     return;
   }
 
-  const method = options.replace === false ? "pushState" : "replaceState";
-  window.history[method](window.history.state, "", nextUrl);
+  // Nuxt's built-in update reload uses the router's fullPath. Writing browser history directly
+  // leaves that route stale and can reopen the previous conversation after an automatic reload.
+  // Let the official router own URL updates now that the workspace is a Nuxt page.
+  const router = useRouter();
+  if (options.replace === false) void router.push(nextUrl);
+  else void router.replace(nextUrl);
 }
 
 function setRouteParam(url: URL, key: string, value: string | number | null | undefined) {

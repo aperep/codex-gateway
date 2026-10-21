@@ -12,6 +12,6 @@ export interface FileGitComparisonState {
 
 export interface FileGitComparisonTarget {
   hostId: number;
-  projectId: number;
+  cwd: string;
   path: string;
 }

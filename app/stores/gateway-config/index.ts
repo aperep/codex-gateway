@@ -26,11 +26,10 @@ export const useGatewayConfigStore = defineStore("gateway-config", () => {
     gatewayDomainEvents.emit("gateway-config-applied", { config: gatewayConfig.value });
   }
 
-  function setCatalog(hosts: GatewayConfig["hosts"], projects: GatewayConfig["projects"]) {
+  function setCatalog(hosts: GatewayConfig["hosts"]) {
     gatewayConfig.value = {
-      version: 1,
+      version: 2,
       hosts: [...hosts],
-      projects: [...projects],
       pinnedThreads: gatewayConfig.value.pinnedThreads,
       notifications: normalizeNotificationSettings(gatewayConfig.value.notifications),
     };
@@ -68,15 +67,23 @@ export const useGatewayConfigStore = defineStore("gateway-config", () => {
 
   async function saveNotificationSettings(notifications: GatewayNotificationSettings) {
     const sessionIsCurrent = captureSessionEpoch();
-    gatewayConfig.value.notifications = normalizeNotificationSettings(notifications);
     const result = await gatewayApi<GatewayConfig>("/api/config/notifications", {
       method: "POST",
-      body: { notifications: gatewayConfig.value.notifications },
+      // Only the server-confirmed response updates account state. A failed save must not leave
+      // settings looking enabled locally when reopening the dialog or reloading restores false.
+      body: { notifications: normalizeNotificationSettings(notifications) },
     });
     if (!sessionIsCurrent()) return false;
     applyConfig(result);
-    if (import.meta.client) toast.success(t("app.notificationSettingsSaved"));
+    if (import.meta.client) {
+      toast.success(t("app.notificationSettingsSaved"), { id: "notification-settings-saved" });
+    }
     return true;
+  }
+
+  async function setWebPushEnabled(enabled: boolean) {
+    const notifications = normalizeNotificationSettings(gatewayConfig.value.notifications);
+    return saveNotificationSettings({ ...notifications, webPush: { enabled } });
   }
 
   async function setPinnedThread(thread: PinnedThreadRecord, pinned: boolean) {
@@ -105,6 +112,7 @@ export const useGatewayConfigStore = defineStore("gateway-config", () => {
     exportConfigText,
     importConfigText,
     saveNotificationSettings,
+    setWebPushEnabled,
     setPinnedThread,
     refreshPinnedThreads: pinnedThreadSync.refresh,
     resetState,

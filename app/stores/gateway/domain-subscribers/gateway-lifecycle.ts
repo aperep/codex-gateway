@@ -8,11 +8,24 @@ import { useGatewayRealtimeStore } from "@/stores/gateway-realtime";
 import { setRealtimeRequestContextResolver } from "@/stores/gateway-realtime/request-context";
 import { useGatewayThreadViewStore } from "@/stores/gateway-thread-view";
 import { useGatewayHostMetricsDataStore } from "@/stores/gateway-host-metrics/data";
+import { useGatewayProjectDefaultsStore } from "@/stores/gateway-project-defaults";
+import { recoverSelectedThreadSettings } from "@/stores/gateway-composer/thread-settings-recovery";
+import { useEventListener } from "@vueuse/core";
 import { gatewayDomainEvents } from "../domain-events";
 
 const lifecycleNotificationKeys = new Set<string>();
 
 export function registerGatewayLifecycleSubscribers() {
+  // A tab can be suspended without losing its WebSocket. Visibility recovery therefore belongs to
+  // this one-time client lifecycle, not to either layout: switching device layouts would otherwise
+  // register duplicate listeners. A reconnect still follows the explicit realtime-reconnected path.
+  useEventListener(
+    () => (import.meta.client ? document : null),
+    "visibilitychange",
+    () => {
+      if (document.visibilityState === "visible") void recoverSelectedThreadSettings();
+    },
+  );
   setRealtimeRequestContextResolver((request) => {
     if (!("hostId" in request)) return {};
     const hostName = useGatewayCatalogStore().hosts.find(
@@ -24,15 +37,20 @@ export function registerGatewayLifecycleSubscribers() {
   gatewayDomainEvents.on("gateway-session-reset", () => {
     lifecycleNotificationKeys.clear();
     useGatewayHostMetricsDataStore().reset();
+    useGatewayProjectDefaultsStore().reset();
   });
   gatewayDomainEvents.on("gateway-config-applied", ({ config }) => {
     const catalog = useGatewayCatalogStore();
     catalog.hosts = [...config.hosts];
-    catalog.projects = [...config.projects];
+    // Directory groups are discovered runtime state. Saving pins/notifications must not erase
+    // them or make them part of the durable account configuration.
+    const hostIds = new Set(config.hosts.map((host) => host.id));
+    catalog.projects = catalog.projects.filter((project) => hostIds.has(project.hostId));
   });
   gatewayDomainEvents.on("host-removed", ({ hostId }) => {
     useGatewayRealtimeStore().closeHostThreadEvents(hostId);
     useGatewayHostMetricsDataStore().clearHost(hostId);
+    useGatewayProjectDefaultsStore().clearHost(hostId);
   });
   gatewayDomainEvents.on("pinned-threads-invalidated", () => {
     const navigation = useGatewayNavigationStore();
@@ -49,10 +67,11 @@ export function registerGatewayLifecycleSubscribers() {
   });
   gatewayDomainEvents.on("realtime-reconnected", () => {
     useGatewayBrowserStore().resetRuntime();
-    // A normal reconnect resumes every thread from its explicit event epoch and cursor. Do not
-    // also activate a full snapshot here: that races replay and discards accepted client-only
-    // items such as steer messages. The server emits thread.events.gap when replay is impossible;
-    // that single path below owns authoritative snapshot recovery.
+    // Settings can change in another Codex client without a subscribed notification. Refresh only
+    // that metadata here; activating a full snapshot would race replay and discard accepted
+    // client-only items such as steer messages. A thread.events.gap remains the sole owner of
+    // authoritative timeline recovery when replay is impossible.
+    void recoverSelectedThreadSettings();
   });
   gatewayDomainEvents.on("realtime-thread-events-gap", ({ hostId, threadId }) => {
     void useGatewayThreadViewStore().recoverThreadEventGap(hostId, threadId);
@@ -77,12 +96,20 @@ export function registerGatewayLifecycleSubscribers() {
     ) {
       return;
     }
+    const status =
+      event.status === "connecting" && current?.status === "mfaConnecting"
+        ? "mfaConnecting"
+        : event.status;
     catalog.hostConnectionStatuses = {
       ...catalog.hostConnectionStatuses,
       [event.hostId]: {
-        status: event.status,
+        status,
         message: event.message,
         updatedAt: Number.isFinite(eventTime) ? eventTime : Date.now(),
+        // Normal SSH lifecycle events do not own upload counters. Only an upgrade update (including
+        // its explicit null at completion/failure) may replace the shared progress snapshot.
+        upgradeProgress:
+          event.upgradeProgress === undefined ? current?.upgradeProgress : event.upgradeProgress,
       },
     };
     const key = `${event.hostId}:${event.status}:${event.message}`;

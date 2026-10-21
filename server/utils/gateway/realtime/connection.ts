@@ -1,16 +1,27 @@
 import type { RealtimeClientMessage } from "~~/shared/types";
 import { parseRealtimeClientMessage } from "~~/shared/runtime/realtime";
-import {
-  isStaleThreadCursorErrorLike,
-  STALE_THREAD_CURSOR_ERROR_CODE,
-} from "~~/shared/gateway-errors";
+import { publicErrorCode, publicErrorMessage } from "../http/errors";
 import { realtimeMessageDispatcher } from "./message-handlers";
 import { RealtimeAuthenticationRequiredError } from "./message-dispatcher";
 import { hostStore } from "../state/hosts";
 import { browserPreviewManager } from "../browser-preview/browser-preview-manager";
 import { recordFromUnknown } from "~~/shared/utils/records";
-import { runPeerScoped, sendRealtimePeerMessage, stateFor, type RealtimePeer } from "./peer-state";
+import {
+  authenticatedUserId,
+  runPeerScoped,
+  sendRealtimePeerMessage,
+  stateFor,
+  type RealtimePeer,
+} from "./peer-state";
 import { clearOwnedSubscriptions, clearSubscriptions } from "./subscription-map";
+import {
+  decodeTerminalResizePayload,
+  decodeTerminalStreamFrame,
+  decodeTerminalTextPayload,
+  terminalStreamOpcode,
+} from "~~/shared/runtime/terminal-stream";
+import { terminalManager } from "../terminal/terminal-manager";
+import { gatewayLog } from "../logging";
 
 export function openRealtimePeer(peer: RealtimePeer) {
   const state = stateFor(peer);
@@ -32,7 +43,7 @@ export async function handleRealtimePeerMessage(peer: RealtimePeer, rawMessage: 
     await realtimeMessageDispatcher.dispatch(peer, request);
   } catch (error: unknown) {
     const details = realtimeErrorDetails(peer, request, error);
-    console.error("[gateway] realtime message failed", {
+    gatewayLog("error", "gateway", "realtime message failed", {
       ...details,
       message: error instanceof Error ? error.message : String(error),
     });
@@ -42,11 +53,46 @@ export async function handleRealtimePeerMessage(peer: RealtimePeer, rawMessage: 
     }
     sendRealtimePeerMessage(peer, {
       type: "error",
-      message: error instanceof Error ? error.message : "Realtime message failed",
+      message: publicErrorMessage(error),
       requestId: request && "requestId" in request ? request.requestId : undefined,
       request,
       code: realtimeErrorCode(error),
       details,
+    });
+  }
+}
+
+export async function handleRealtimePeerBinaryMessage(peer: RealtimePeer, data: Uint8Array) {
+  const frame = decodeTerminalStreamFrame(data);
+  if (frame === null) {
+    sendRealtimePeerMessage(peer, { type: "error", message: "Invalid realtime binary frame" });
+    return;
+  }
+
+  try {
+    const userId = authenticatedUserId(peer);
+    if (frame.opcode === terminalStreamOpcode.input) {
+      const input = decodeTerminalTextPayload(frame);
+      if (input !== null) terminalManager.input(userId, frame.sessionId, input);
+      return;
+    }
+    if (frame.opcode === terminalStreamOpcode.resize) {
+      const resize = decodeTerminalResizePayload(frame);
+      if (resize !== null) {
+        terminalManager.resize(userId, frame.sessionId, resize.cols, resize.rows);
+      }
+      return;
+    }
+    if (frame.opcode === terminalStreamOpcode.output) {
+      sendRealtimePeerMessage(peer, {
+        type: "error",
+        message: "Invalid terminal output direction",
+      });
+    }
+  } catch (error: unknown) {
+    sendRealtimePeerMessage(peer, {
+      type: "error",
+      message: error instanceof Error ? error.message : "Realtime binary message failed",
     });
   }
 }
@@ -61,6 +107,8 @@ export function cleanupRealtimePeer(peer: RealtimePeer) {
   state.hostLifecycleUnsubscribe = undefined;
   state.terminalUnsubscribe?.();
   state.terminalUnsubscribe = undefined;
+  state.terminalOutputStream?.dispose();
+  state.terminalOutputStream = undefined;
   state.notificationUnsubscribe?.();
   state.notificationUnsubscribe = undefined;
   state.pinnedThreadsUnsubscribe?.();
@@ -75,6 +123,8 @@ export function cleanupRealtimePeer(peer: RealtimePeer) {
   clearSubscriptions(state.threadUnsubscribers);
   clearSubscriptions(state.hostMetricsUnsubscribers);
   clearSubscriptions(state.tmuxSessionUnsubscribers);
+  state.hostMfaUnsubscribe?.();
+  state.hostMfaUnsubscribe = undefined;
   clearOwnedSubscriptions(state.fileWatchUnsubscribers);
 }
 
@@ -125,8 +175,5 @@ function realtimeRequestHostName(peer: RealtimePeer, request: RealtimeClientMess
 }
 
 function realtimeErrorCode(error: unknown) {
-  if (isStaleThreadCursorErrorLike(error)) {
-    return STALE_THREAD_CURSOR_ERROR_CODE;
-  }
-  return "realtimeMessageFailed";
+  return publicErrorCode(error) ?? "realtimeMessageFailed";
 }

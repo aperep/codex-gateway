@@ -16,13 +16,13 @@ const {
   openingThread,
   selectedThreadId,
   selectedThreadStatus,
-  selectedProjectId,
+  selectedCwd,
   selectedHostId,
   currentThread,
   historyTurns,
   loading,
   loadingOlderTurns,
-  olderTurnsCursor,
+  oldestTimelineCursor,
   scrollToLatestToken,
   visibleError,
   selectedThreadViewReady,
@@ -68,16 +68,15 @@ const showThreadLoading = computed(
         :thread-status="selectedThreadStatus"
         :turns="historyTurns"
         :host-id="selectedHostId"
-        :project-id="selectedProjectId"
         :workspace-root="currentThread?.cwd ?? null"
         :loading="loading"
         :loading-older="loadingOlderTurns"
-        :older-turns-cursor="olderTurnsCursor"
+        :oldest-timeline-cursor="oldestTimelineCursor"
         :scroll-to-latest-token="scrollToLatestToken"
         @load-older="threadTurns.loadOlderTurns"
       />
 
-      <ChatPanelScrollArea v-else-if="selectedProjectId">
+      <ChatPanelScrollArea v-else-if="selectedCwd">
         <ProjectThreadList />
       </ChatPanelScrollArea>
 
@@ -87,14 +86,14 @@ const showThreadLoading = computed(
         >
           <div class="mb-2 flex items-center gap-2 text-ink-muted">
             <FolderIcon class="size-4" />
-            {{ selectedProjectId ? t("app.selectThreadFirst") : t("app.selectProjectFirst") }}
+            {{ selectedCwd ? t("app.selectThreadFirst") : t("app.selectProjectFirst") }}
           </div>
-          {{ selectedProjectId ? t("app.noThread") : t("app.chooseProject") }}
+          {{ selectedCwd ? t("app.noThread") : t("app.chooseProject") }}
         </div>
       </ChatPanelScrollArea>
 
       <MisalignmentRecoveryCard v-if="selectedThreadId" />
-      <ChatComposer v-if="selectedThreadId || selectedProjectId" />
+      <ChatComposer v-if="selectedThreadId || selectedCwd" />
     </div>
   </div>
 </template>

@@ -10,8 +10,8 @@ test("opens a real remote HTTP and WebSocket service through the SSH preview pro
   await openApp(page);
   const host = await remoteWorkspace.addHost(`preview-host-${Date.now()}`);
   const project = await remoteWorkspace.addProject(host.id, `preview-project-${Date.now()}`);
-  const previewThreadId = await remoteWorkspace.startThread(project.id);
-  const otherThreadId = await remoteWorkspace.startThread(project.id);
+  const previewThreadId = await remoteWorkspace.startThread(project.remotePath);
+  const otherThreadId = await remoteWorkspace.startThread(project.remotePath);
   await selectSidebarThread(page, previewThreadId);
   await startRemotePreviewServer(remote);
 

@@ -15,6 +15,8 @@ import { uploadFile, uploadFileResumable } from "./ssh-transfer";
 import { currentGatewayUserId } from "../../state/memory";
 import { EventEmitter } from "@posva/event-emitter";
 import { SshBackgroundTaskScheduler } from "./ssh-background-tasks";
+import { hostMfaManager } from "../../host-mfa/host-mfa-instance";
+import { HOST_MFA_TIMEOUT_MS } from "../../host-mfa/host-mfa-manager";
 
 const SSH_READY_TIMEOUT_MS = 30_000;
 const SSH_KEEPALIVE_INTERVAL_MS = 30_000;
@@ -57,11 +59,19 @@ export class SshConnectionPool extends EventEmitter<SshConnectionPoolEvents> {
 
   connect(host: HostWithSecret): Promise<Client> {
     const resolved = resolveSshConfig(host);
-    const key = sshConnectionKey(host, resolved);
+    const key = this.connectionKeyFor(host);
     this.scopedHostKeys().set(host.id, key);
 
     const existing = this.clients.get(key);
     if (existing) return this.notifyReady(existing, host);
+
+    const userId = currentGatewayUserId();
+    // All Gateway features converge on this pool. Enforcing the explicit MFA action here prevents
+    // file, model, Git, thread, and scheduled requests from creating a transport behind the user's
+    // back while still allowing them to reuse an authenticated connection already in the pool.
+    if (userId !== null && !hostMfaManager.canStartConnection(userId, host.id)) {
+      throw new Error("MFA host requires an explicit connection request");
+    }
 
     const token = Symbol(key);
     this.clientTokens.set(key, token);
@@ -77,7 +87,7 @@ export class SshConnectionPool extends EventEmitter<SshConnectionPoolEvents> {
   }
 
   async execChannelIfConnected(host: HostWithSecret, command: string) {
-    const key = sshConnectionKey(host, resolveSshConfig(host));
+    const key = this.connectionKeyFor(host);
     const connection = this.clients.get(key);
     if (connection === undefined) return null;
     const client = await connection;
@@ -95,7 +105,11 @@ export class SshConnectionPool extends EventEmitter<SshConnectionPoolEvents> {
   }
 
   connectionKeyFor(host: HostWithSecret) {
-    return sshConnectionKey(host, resolveSshConfig(host));
+    const key = sshConnectionKey(host, resolveSshConfig(host));
+    // A keyboard-interactive challenge is part of the user's SSH authentication, so the
+    // transport must never be shared across Gateway users. Scoping every transport consistently
+    // also keeps the key stable when the first challenge changes a host's runtime MFA state.
+    return `${key}:gateway-user:${currentGatewayUserId() ?? "anonymous"}`;
   }
 
   async exec(
@@ -314,8 +328,7 @@ export class SshConnectionPool extends EventEmitter<SshConnectionPoolEvents> {
   }
 
   sftp(host: HostWithSecret): Promise<SFTPWrapper> {
-    const resolved = resolveSshConfig(host);
-    const key = sshConnectionKey(host, resolved);
+    const key = this.connectionKeyFor(host);
     this.scopedHostKeys().set(host.id, key);
     return this.sftpChannels.get(host, key, () => this.connect(host));
   }
@@ -328,8 +341,13 @@ export class SshConnectionPool extends EventEmitter<SshConnectionPoolEvents> {
     this.sftpChannels.close(this.connectionKeyFor(host));
   }
 
-  async uploadFileResumable(host: HostWithSecret, localPath: string, remotePath: string) {
-    return await uploadFileResumable(this, host, localPath, remotePath);
+  async uploadFileResumable(
+    host: HostWithSecret,
+    localPath: string,
+    remotePath: string,
+    onProgress?: (progress: import("./ssh-upload-progress").SftpUploadProgress) => void,
+  ) {
+    return await uploadFileResumable(this, host, localPath, remotePath, onProgress);
   }
 
   syncHosts(hosts: HostWithSecret[]) {
@@ -338,7 +356,7 @@ export class SshConnectionPool extends EventEmitter<SshConnectionPoolEvents> {
     const activeKeys = new Set<string>();
     scopedHostKeys.clear();
     for (const host of hosts) {
-      const key = sshConnectionKey(host, resolveSshConfig(host));
+      const key = this.connectionKeyFor(host);
       activeKeys.add(key);
       scopedHostKeys.set(host.id, key);
     }
@@ -351,8 +369,7 @@ export class SshConnectionPool extends EventEmitter<SshConnectionPoolEvents> {
   }
 
   disconnectHost(host: HostWithSecret) {
-    const key =
-      this.scopedHostKeys().get(host.id) ?? sshConnectionKey(host, resolveSshConfig(host));
+    const key = this.scopedHostKeys().get(host.id) ?? this.connectionKeyFor(host);
     this.disconnectKey(key);
   }
 
@@ -406,6 +423,14 @@ export class SshConnectionPool extends EventEmitter<SshConnectionPoolEvents> {
     key: string,
     token: symbol,
   ) {
+    const assertCurrentConnection = () => {
+      if (this.clientTokens.get(key) !== token) {
+        throw new Error("SSH connection attempt was superseded by Host reconfiguration");
+      }
+    };
+    // The pool entry owns the whole retry sequence, not an individual socket. A Host removed
+    // during backoff must not start another connection or publish a stale MFA challenge.
+    assertCurrentConnection();
     const sock = resolved.proxy
       ? await createProxySocket({
           proxy: resolved.proxy,
@@ -413,6 +438,10 @@ export class SshConnectionPool extends EventEmitter<SshConnectionPoolEvents> {
           targetPort: host.port ?? resolved.port,
         })
       : undefined;
+    if (this.clientTokens.get(key) !== token) {
+      sock?.destroy();
+      assertCurrentConnection();
+    }
     const client = new Client();
     return await new Promise<Client>((resolve, reject) => {
       let settled = false;
@@ -421,11 +450,22 @@ export class SshConnectionPool extends EventEmitter<SshConnectionPoolEvents> {
           return;
         }
         settled = true;
-        this.deleteClientIfCurrent(key, token);
+        if (mfaUserId !== null && this.clientTokens.get(key) === token) {
+          // The SSH client can time out while waiting for the user's MFA answer. Remove the
+          // pending request with the transport so a later code cannot target a dead socket.
+          hostMfaManager.cancelMfa(mfaUserId, host.id);
+        }
+        // Keep the shared Promise and token while withSshConnectRetries owns the sequence.
+        // Deleting them here invalidates every later attempt's MFA answer and lets other callers
+        // create competing transports. The outer catch evicts the entry after the final failure.
         sock?.destroy();
         client.end();
         reject(error);
       };
+
+      // Capture the user scope at connection time for use in async MFA callbacks
+      const mfaUserId = currentGatewayUserId();
+
       client
         .on("ready", () => {
           if (this.clientTokens.get(key) !== token) {
@@ -433,13 +473,42 @@ export class SshConnectionPool extends EventEmitter<SshConnectionPoolEvents> {
             return;
           }
           settled = true;
+          // Only an authenticated transport owns pool eviction on disconnect. Failed attempts
+          // can emit end/close after a retry has started; those events must not evict that retry.
+          client.once("end", () => this.deleteClientIfCurrent(key, token));
+          client.once("close", () => this.deleteClientIfCurrent(key, token));
           resolve(client);
         })
         .on("error", fail)
-        .on("end", () => this.deleteClientIfCurrent(key, token))
-        .on("close", () => {
-          this.deleteClientIfCurrent(key, token);
-          fail(new Error(SSH_CONNECTION_CLOSED_BEFORE_READY));
+        .on("end", () => fail(new Error(SSH_CONNECTION_CLOSED_BEFORE_READY)))
+        .on("close", () => fail(new Error(SSH_CONNECTION_CLOSED_BEFORE_READY)))
+        .on("keyboard-interactive", (name, instructions, _lang, prompts, finish) => {
+          if (settled || this.clientTokens.get(key) !== token) return;
+          // PAM may follow the actual verification-code challenge with an informational
+          // keyboard-interactive round that contains no prompts. It requires an empty response,
+          // not another user interaction; publishing it as MFA would leave the Host falsely
+          // marked as waiting after authentication has already succeeded.
+          if (prompts.length === 0) {
+            finish([]);
+            return;
+          }
+          if (mfaUserId === null) {
+            // No authenticated user scope — fall back to empty answers, which will likely
+            // cause authentication to fail so the client can retry with a different method.
+            finish([]);
+            return;
+          }
+
+          hostMfaManager
+            .requestMfa(mfaUserId, host, instructions, prompts)
+            .then((answers) => {
+              if (settled || this.clientTokens.get(key) !== token) return;
+              finish(answers);
+            })
+            .catch(() => {
+              // MFA timed out or was canceled — give empty answers so auth fails
+              if (!settled && this.clientTokens.get(key) === token) finish([]);
+            });
         })
         .connect({
           host: sock ? undefined : resolved.hostName,
@@ -456,9 +525,13 @@ export class SshConnectionPool extends EventEmitter<SshConnectionPoolEvents> {
                   resolved.privateKeyPath !== ""
                 ? readFileSync(expandHome(resolved.privateKeyPath))
                 : undefined,
-          readyTimeout: SSH_READY_TIMEOUT_MS,
+          // ssh2 keeps this timer running while keyboard-interactive waits for the MFA answer.
+          // Include the user-input window or a valid challenge is misreported as a handshake
+          // failure before the sidebar can finish authentication.
+          readyTimeout: SSH_READY_TIMEOUT_MS + HOST_MFA_TIMEOUT_MS,
           keepaliveInterval: SSH_KEEPALIVE_INTERVAL_MS,
           keepaliveCountMax: SSH_KEEPALIVE_COUNT_MAX,
+          tryKeyboard: true,
         });
     });
   }

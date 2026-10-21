@@ -60,12 +60,17 @@ export interface ThreadPendingApproval extends Record<string, unknown> {
 }
 
 export interface ThreadHistoryItem extends Record<string, unknown> {
+  /** Client cache metadata only; never sent back as an App Server item. */
+  outputTotalLength?: number;
+  outputWindowEnd?: number;
   id?: string | number | null;
   clientId?: string | number | null;
   turnId?: string | number | null;
   type?: string | null;
   status?: ThreadHistoryStatus;
   text?: string | null;
+  /** Official message classification; null means App Server has not supplied a phase. */
+  phase?: "commentary" | "partial_answer" | "final_answer" | null;
   /** `async` is a user-visible message delivered without completing the active turn. */
   delivery?: "async" | null;
   /** Structured choices attached to an async agent message; replies remain ordinary user input. */
@@ -158,13 +163,23 @@ export interface ThreadResponseUsage {
 
 export interface ThreadHistoryTurn {
   id?: string | number | null;
+  /** Official origin of this turn's chain of work, supplied by Turn lifecycle payloads. */
+  rootTurnId?: string | null;
   status?: ThreadHistoryStatus;
   items?: ThreadHistoryItem[];
   itemsView?: "notLoaded" | "summary" | "full";
+  /** Opaque App Server continuation for a partially loaded client disclosure. */
+  olderItemsCursor?: string | null;
   error?: {
     message?: string | null;
     codexErrorInfo?: unknown;
     additionalDetails?: string | null;
+    misalignment?: {
+      errorType: string | null;
+      detailedExplanation: string | null;
+      steer: { message: string } | null;
+      reviewTarget?: string | null;
+    } | null;
   } | null;
   startedAt?: number | string | null;
   completedAt?: number | string | null;

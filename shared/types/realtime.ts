@@ -3,12 +3,11 @@ import type {
   ComposerTurnOptions,
   ThreadGoal,
   ThreadGoalStatus,
-  ThreadItemsPageResult,
+  ThreadAttachment,
   ThreadOpenResult,
   ThreadRuntimeStatusUpdate,
-  ThreadTurnsPageResult,
 } from "./thread";
-import type { ApprovalPolicy, ReasoningEffort } from "./thread";
+import type { ApprovalPolicy, ReasoningEffort, ReasoningSummary } from "./thread";
 import type { TerminalOpenTarget, TerminalSessionSnapshot } from "./terminal";
 import type {
   BrowserPreviewResourceFailure,
@@ -25,8 +24,15 @@ import type { TmuxSessionsSnapshot } from "./tmux";
 import type { RemoteGitFileComparison, RemoteGitWorkspaceSnapshot } from "./files";
 import type { ProjectFileSearchResult } from "./files";
 import type { GatewayMcpServerStatus } from "./mcp";
+import type { AgentProviderId } from "../agent/providers";
+import type { AgentProjectDefaults } from "./agent-defaults";
+import type { WebPushSubscription } from "../notifications/web-push";
+import type { HostUpgradeProgress } from "../host-upgrade";
 
 export type RealtimeClientMessage =
+  | { type: "notification.webPush.configure"; requestId: string }
+  | { type: "notification.webPush.subscribe"; requestId: string; subscription: WebPushSubscription }
+  | { type: "notification.webPush.unsubscribe"; requestId: string; endpoint: string }
   | {
       type: "auth.authenticate";
       token: string;
@@ -37,6 +43,12 @@ export type RealtimeClientMessage =
   | {
       type: "host.lifecycle.unsubscribe";
     }
+  | { type: "host.upgrades.read"; requestId: string }
+  | {
+      type: "host.daemon.restart";
+      requestId: string;
+      hostId: number;
+    }
   | {
       type: "host.metrics.subscribe";
       requestId: string;
@@ -45,6 +57,13 @@ export type RealtimeClientMessage =
   | {
       type: "host.metrics.unsubscribe";
       hostId: number;
+    }
+  | {
+      type: "project.defaults.read";
+      requestId: string;
+      hostId: number;
+      cwd: string;
+      provider?: AgentProviderId;
     }
   | {
       type: "tmux.sessions.subscribe";
@@ -64,7 +83,6 @@ export type RealtimeClientMessage =
       type: "thread.activate";
       requestId: string;
       hostId: number;
-      projectId?: number | null;
       threadId: string;
       limit?: number;
     }
@@ -81,32 +99,62 @@ export type RealtimeClientMessage =
       threadId: string;
     }
   | {
-      type: "thread.turns.load";
+      type: "thread.settings.read";
+      requestId: string;
+      hostId: number;
+      threadId: string;
+    }
+  | {
+      type: "thread.timeline.load";
       requestId: string;
       hostId: number;
       threadId: string;
       cursor?: string | null;
       limit?: number;
-      sortDirection?: "asc" | "desc";
     }
   | {
-      type: "thread.items.load";
+      type: "thread.items.read";
       requestId: string;
       hostId: number;
       threadId: string;
       turnId: string;
+      itemIds: string[];
+      outputEnd?: number;
+    }
+  | {
+      type: "thread.attachments.list";
+      requestId: string;
+      hostId: number;
+      threadId: string;
       cursor?: string | null;
       limit?: number;
-      sortDirection?: "asc" | "desc";
+    }
+  | {
+      type: "thread.attachment.add";
+      requestId: string;
+      hostId: number;
+      threadId: string;
+      attachmentType: string;
+      identityKey: string;
+      payload: unknown;
+    }
+  | {
+      type: "thread.attachment.remove";
+      requestId: string;
+      hostId: number;
+      threadId: string;
+      attachmentType: string;
+      identityKey: string;
     }
   | {
       type: "thread.start";
       requestId: string;
       hostId: number;
-      projectId?: number | null;
       cwd?: string | null;
+      provider?: AgentProviderId;
       model?: string | null;
       effort?: ReasoningEffort | null;
+      summary?: ReasoningSummary | null;
       approvalPolicy?: ApprovalPolicy | null;
     }
   | {
@@ -114,12 +162,12 @@ export type RealtimeClientMessage =
       requestId: string;
       hostId: number;
       threadId: string;
-      projectId: number;
       text: string;
       clientUserMessageId?: string | null;
       cwd?: string | null;
       model?: string | null;
       effort?: ReasoningEffort | null;
+      summary?: ReasoningSummary | null;
       approvalPolicy?: ApprovalPolicy | null;
       collaborationMode?: ComposerTurnOptions["collaborationMode"];
       images?: ComposerTurnOptions["images"];
@@ -131,11 +179,11 @@ export type RealtimeClientMessage =
       requestId: string;
       hostId: number;
       threadId: string;
-      projectId: number;
       expectedTurnId: string;
       text: string;
       clientUserMessageId?: string | null;
       images?: ComposerTurnOptions["images"];
+      files?: ComposerTurnOptions["files"];
       references?: ComposerTurnOptions["references"];
     }
   | {
@@ -153,6 +201,7 @@ export type RealtimeClientMessage =
       turnId: string;
       model?: string | null;
       effort?: ReasoningEffort | null;
+      summary?: ReasoningSummary | null;
     }
   | {
       type: "mcp.status.list";
@@ -248,7 +297,7 @@ export type RealtimeClientMessage =
       type: "file.search";
       requestId: string;
       hostId: number;
-      projectId: number;
+      cwd: string;
       query: string;
       cancellationToken: string;
     }
@@ -256,14 +305,14 @@ export type RealtimeClientMessage =
       type: "file.watch.subscribe";
       requestId: string;
       hostId: number;
-      projectId: number;
+      cwd: string;
       threadId: string;
       paths: string[];
     }
   | {
       type: "file.watch.unsubscribe";
       hostId: number;
-      projectId: number;
+      cwd: string;
       threadId: string;
       subscriptionId: string;
     }
@@ -271,15 +320,28 @@ export type RealtimeClientMessage =
       type: "file.git.compare";
       requestId: string;
       hostId: number;
-      projectId: number;
+      cwd: string;
       path: string;
     }
   | {
       type: "file.git.workspace.inspect";
       requestId: string;
       hostId: number;
-      projectId: number;
+      cwd: string;
       rootPath: string;
+    }
+  | {
+      type: "host.mfa.connect";
+      hostId: number;
+    }
+  | {
+      type: "host.mfa.submit";
+      hostId: number;
+      code: string;
+    }
+  | {
+      type: "host.mfa.cancel";
+      hostId: number;
     }
   | {
       type: "ping";
@@ -287,6 +349,14 @@ export type RealtimeClientMessage =
     };
 
 export type RealtimeServerMessage =
+  | { type: "notification.webPush.configured"; requestId: string; publicKey: string }
+  | { type: "notification.webPush.subscribed"; requestId: string }
+  | { type: "notification.webPush.unsubscribed"; requestId: string }
+  | {
+      type: "host.daemon.restarted";
+      requestId: string;
+      hostId: number;
+    }
   | {
       type: "ready";
       connectionId: string;
@@ -316,10 +386,25 @@ export type RealtimeServerMessage =
           | "restarting"
           | "connecting"
           | "connected"
-          | "failed";
+          | "failed"
+          | "mfaRequired";
         message: string;
         createdAt?: string;
+        upgradeProgress?: HostUpgradeProgress | null;
       };
+    }
+  | {
+      type: "host.upgrades.snapshot";
+      requestId: string;
+      createdAt: string;
+      upgrades: Array<{ hostId: number; progress: HostUpgradeProgress | null }>;
+    }
+  | {
+      type: "project.defaults.snapshot";
+      requestId: string;
+      hostId: number;
+      cwd: string;
+      defaults: AgentProjectDefaults;
     }
   | {
       type: "host.metrics.snapshot";
@@ -372,18 +457,51 @@ export type RealtimeServerMessage =
       lastEventId: number;
       eventEpoch: string;
     } & ThreadOpenResult)
-  | ({
-      type: "thread.turns.page";
+  | {
+      type: "thread.timeline.page";
       requestId: string;
       hostId: number;
       threadId: string;
-    } & ThreadTurnsPageResult)
-  | ({
-      type: "thread.items.page";
+      data: import("../runtime/app-server").AppServerTimelinePage["data"];
+      nextCursor: string | null;
+      activeRealtimeSessionAtPageStart: string | null;
+    }
+  | {
+      type: "thread.items.result";
       requestId: string;
       hostId: number;
       threadId: string;
-    } & ThreadItemsPageResult)
+      data: import("../runtime/app-server").AppServerItemsReadResponse["data"];
+    }
+  | {
+      type: "thread.attachments.page";
+      requestId: string;
+      hostId: number;
+      threadId: string;
+      data: ThreadAttachment[];
+      nextCursor: string | null;
+    }
+  | {
+      type: "thread.attachment.added";
+      requestId: string;
+      hostId: number;
+      threadId: string;
+      outcome: "created" | "existing";
+      attachment: ThreadAttachment;
+    }
+  | {
+      type: "thread.attachment.removed";
+      requestId: string;
+      hostId: number;
+      threadId: string;
+    }
+  | {
+      type: "thread.settings.snapshot";
+      requestId: string;
+      hostId: number;
+      threadId: string;
+      threadSettings: ThreadSettingsState;
+    }
   | {
       type: "turn.start.accepted";
       requestId: string;
@@ -499,14 +617,14 @@ export type RealtimeServerMessage =
       type: "file.search.results";
       requestId: string;
       hostId: number;
-      projectId: number;
+      cwd: string;
       result: ProjectFileSearchResult;
     }
   | {
       type: "file.watch.ready";
       requestId: string;
       hostId: number;
-      projectId: number;
+      cwd: string;
       threadId: string;
       rootPath: string;
       paths: string[];
@@ -514,7 +632,7 @@ export type RealtimeServerMessage =
   | {
       type: "file.watch.changed";
       hostId: number;
-      projectId: number;
+      cwd: string;
       threadId: string;
       rootPath: string;
       paths: string[];
@@ -522,14 +640,14 @@ export type RealtimeServerMessage =
   | {
       type: "file.watch.closed";
       hostId: number;
-      projectId: number;
+      cwd: string;
       threadId: string;
     }
   | {
       type: "file.git.comparison";
       requestId: string;
       hostId: number;
-      projectId: number;
+      cwd: string;
       path: string;
       comparison: RemoteGitFileComparison;
     }
@@ -537,7 +655,7 @@ export type RealtimeServerMessage =
       type: "file.git.workspace.snapshot";
       requestId: string;
       hostId: number;
-      projectId: number;
+      cwd: string;
       rootPath: string;
       snapshot: RemoteGitWorkspaceSnapshot;
     }
@@ -561,6 +679,13 @@ export type RealtimeServerMessage =
       request?: RealtimeClientMessage;
       code?: string;
       details?: Record<string, unknown>;
+    }
+  | {
+      type: "host.mfa.request";
+      hostId: number;
+      name: string;
+      instructions: string;
+      prompts: Array<{ prompt: string; echo?: boolean }>;
     }
   | {
       type: "pong";

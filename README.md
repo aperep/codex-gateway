@@ -129,7 +129,7 @@ Core rules:
 
 ## Features
 
-- **Server-side accounts and config**: manually created users, Bearer token login, encrypted host/project/thread config in SQLite.
+- **Server-side accounts and config**: manually created users, Bearer token login, and encrypted host, pinned-thread, and notification config in SQLite. Directory groups are discovered from Codex thread working directories.
 - **Remote hosts**: SSH password, private key, ssh-agent, and optional SSH proxy support.
 - **Codex runtime management**: detects remote Codex versions, upgrades old installs, restarts stale app-server processes, and reconnects automatically.
 - **Thread discovery and restore**: discovers Codex sessions from remote state and opens threads with a small cached turn window first.
@@ -144,7 +144,7 @@ Core rules:
 - **User-wide tmux monitoring**: scan tmux sessions across every configured Host, inspect recent pane output, and bind a monitor to the relevant Codex thread. One-shot monitors notify when the current job exits or returns to its shell; permanent monitors wait for later runs and notify after each completed run. Active monitors and history are persisted in SQLite.
 - **Multi-client sync**: multiple browser tabs can subscribe to the same thread and receive the same gateway-side app-server event stream.
 - **State repair**: after SSH/app-server reconnect, Gateway refreshes running thread state; a Nitro scheduled task also checks stale running threads.
-- **Actionable notifications**: in-browser Sonner notifications and optional server-side Bark push for completed main turns and tmux jobs. Thread notifications navigate to the conversation; tmux notifications open the matching monitor and pane output. Delivery is de-duplicated per user and completion.
+- **Actionable notifications**: in-browser Sonner alerts and optional Web Push for completed main turns, goals, user questions, and tmux jobs. Web Push takes priority; Bark is the fallback when no browser is subscribed or push delivery fails. Authorize each browser in Settings → Notifications. HTTPS is required; on iPhone/iPad, install the Home Screen app first. Push subscriptions and VAPID keys are encrypted in SQLite; logout revokes that browser session's subscription. Thread notifications open the conversation, and delivery is de-duplicated per user and completion.
 - **Mobile layout**: responsive sidebar, composer, long-press context actions, and sub-agent panels.
 - **Real E2E coverage**: Playwright tests run against a real Nuxt server, real SSH Docker target, and real Codex app-server.
 
@@ -206,7 +206,7 @@ Environment variables:
 
 | Variable | Required | Description |
 | --- | --- | --- |
-| `CODEX_GATEWAY_CONFIG_SECRET` | Yes in production | Stable secret used to encrypt stored host/project/thread config. |
+| `CODEX_GATEWAY_CONFIG_SECRET` | Yes in production | Stable secret used to encrypt stored host, pinned-thread, and notification config. |
 | `CODEX_GATEWAY_DB_PATH` | No | SQLite database path. Defaults to the app data path; Docker uses `/data/codex-gateway.db`. |
 | `HOST` | No | Nuxt listen host. Docker uses `0.0.0.0`. |
 | `PORT` | No | Nuxt listen port. Docker uses `3000`. |

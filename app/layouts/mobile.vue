@@ -13,7 +13,7 @@ import {
   SheetTitle,
 } from "@codex-gateway/ui/sheet";
 import { useGatewayCatalogStore } from "@/stores/gateway-catalog";
-import { projectById } from "@/stores/gateway-catalog/selectors";
+import { projectForDirectory } from "@/stores/gateway-catalog/selectors";
 import { useGatewayNavigationStore } from "@/stores/gateway-navigation";
 import { useGatewayThreadViewStore } from "@/stores/gateway-thread-view";
 import { titleForThread } from "@/stores/gateway/thread-utils/identity";
@@ -21,9 +21,11 @@ import { titleForThread } from "@/stores/gateway/thread-utils/identity";
 const catalog = useGatewayCatalogStore();
 const navigation = useGatewayNavigationStore();
 const { projects } = storeToRefs(catalog);
-const { selectedThreadId, selectedHostId, selectedProjectId } = storeToRefs(navigation);
+const { selectedThreadId, selectedHostId, selectedCwd } = storeToRefs(navigation);
 const { currentThread } = storeToRefs(useGatewayThreadViewStore());
-const selectedProject = computed(() => projectById(projects.value, selectedProjectId.value));
+const selectedProject = computed(() =>
+  projectForDirectory(projects.value, selectedHostId.value, selectedCwd.value),
+);
 const sidebarOpen = ref(false);
 const mobileTitle = computed(() => {
   if (selectedThreadId.value && currentThread.value) {
@@ -32,7 +34,7 @@ const mobileTitle = computed(() => {
   return selectedProject.value?.name || "Codex Gateway";
 });
 
-watch([selectedHostId, selectedProjectId, selectedThreadId], () => {
+watch([selectedHostId, selectedCwd, selectedThreadId], () => {
   sidebarOpen.value = false;
 });
 </script>

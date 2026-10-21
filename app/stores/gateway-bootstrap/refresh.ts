@@ -31,7 +31,6 @@ export async function refreshGatewayClient() {
     const routeSelection = readGatewayRouteSelection();
     useGatewayRealtimeStore().connectHostLifecycleEvents();
     catalog.projects = [];
-    catalog.projectDirectoryAvailability = {};
     navigation.threads = [];
     catalog.models = [];
     catalog.modelsHostId = null;
@@ -45,7 +44,7 @@ export async function refreshGatewayClient() {
     else if (navigation.selectedHostId === null) {
       navigation.selectedHostId = catalog.hosts[0]?.id ?? null;
     }
-    navigation.selectedProjectId = routeHostExists ? routeSelection.projectId : null;
+    navigation.selectedCwd = routeHostExists ? routeSelection.cwd : null;
     navigation.selectedThreadId = routeHostExists ? routeSelection.threadId : null;
     views.resetCurrentView();
 
@@ -60,7 +59,7 @@ export async function refreshGatewayClient() {
       views.loading = false;
       await views.openThread(routeSelection.threadId, {
         hostId: routeSelection.hostId,
-        projectId: routeSelection.projectId,
+        cwd: routeSelection.cwd,
         replaceRoute: true,
       });
       hydrateNavigationDataInBackground(sessionEpoch);
@@ -76,7 +75,7 @@ export async function refreshGatewayClient() {
         writeGatewayRouteSelection(
           {
             hostId: navigation.selectedHostId,
-            projectId: navigation.selectedProjectId,
+            cwd: navigation.selectedCwd,
             threadId: null,
           },
           { replace: true },
@@ -89,7 +88,7 @@ export async function refreshGatewayClient() {
       messageFromError(error, bootstrap.t("app.bootstrapFailed"), bootstrap.errorLabels),
       {
         hostId: navigation.selectedHostId,
-        projectId: navigation.selectedProjectId,
+        cwd: navigation.selectedCwd,
         threadId: navigation.selectedThreadId,
       },
     );
@@ -114,8 +113,8 @@ async function hydrateNavigationData(sessionEpoch: number) {
   if (!canContinue()) return;
   await navigation.listThreads();
   if (!canContinue()) return;
-  if (navigation.selectedProjectId === null) catalog.ensureSelectedProject();
-  if (canContinue() && navigation.selectedProjectId !== null) await navigation.listThreads();
+  if (navigation.selectedCwd === null) catalog.ensureSelectedProject();
+  if (canContinue() && navigation.selectedCwd !== null) await navigation.listThreads();
 }
 
 function hydrateNavigationDataInBackground(sessionEpoch: number) {
@@ -128,7 +127,7 @@ function hydrateNavigationDataInBackground(sessionEpoch: number) {
       messageFromError(error, bootstrap.t("app.bootstrapFailed"), bootstrap.errorLabels),
       {
         hostId: navigation.selectedHostId,
-        projectId: navigation.selectedProjectId,
+        cwd: navigation.selectedCwd,
         threadId: navigation.selectedThreadId,
       },
     );

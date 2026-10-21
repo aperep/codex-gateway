@@ -15,7 +15,6 @@ import GitChangesView from "./git/GitChangesView.vue";
 
 const props = defineProps<{
   hostId: number;
-  projectId: number | null;
   threadId: string;
   rootPath: string;
   visible: boolean;
@@ -27,7 +26,6 @@ const emit = defineEmits<{
 const activeView = ref<"files" | "changes">("files");
 const git = useFileGitWorkspace({
   hostId: () => props.hostId,
-  projectId: () => props.projectId,
   rootPath: () => props.rootPath,
 });
 const changeCount = computed(() => git.changes.value.length);
@@ -35,7 +33,7 @@ const reviewPanels = useFileGitReviewPanelStore();
 const workspaceLayout = useGatewayWorkspaceLayoutStore();
 
 function openReview(selectedPath: string | null = null) {
-  const scopeKey = workspaceLayoutScopeKey(props.hostId, props.projectId, props.threadId);
+  const scopeKey = workspaceLayoutScopeKey(props.hostId, props.rootPath, props.threadId);
   reviewPanels.open(scopeKey, selectedPath);
   workspaceLayout.requestPanelActivation(GIT_REVIEW_WORKSPACE_PANEL_ID);
   emit("reviewOpened");
@@ -80,7 +78,6 @@ function openChange(path: string, change: RemoteGitWorkspaceFile) {
     >
       <RemoteFileTree
         :host-id="hostId"
-        :project-id="projectId"
         :thread-id="threadId"
         :root-path="rootPath"
         :visible="visible && activeView === 'files'"
@@ -94,9 +91,8 @@ function openChange(path: string, change: RemoteGitWorkspaceFile) {
     >
       <GitChangesView
         :host-id="hostId"
-        :project-id="projectId"
         :root-path="rootPath"
-        :can-promote="projectId !== null"
+        :can-promote="rootPath !== ''"
         @open="openChange"
         @open-review="openReview"
       />

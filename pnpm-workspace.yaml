@@ -7,6 +7,11 @@
 packages:
   - "packages/*"
 
+# Installation/postinstall owns vendor builds. Running lint must never implicitly reinstall and
+# rebuild all workspace packages via pnpm's default verifyDepsBeforeRun=install behavior.
+verifyDepsBeforeRun: false
+minimumReleaseAgeExcludePrune: true
+
 allowBuilds:
   "@parcel/watcher": true
   better-sqlite3: true
@@ -17,81 +22,44 @@ allowBuilds:
   vue-demi: true
 
 minimumReleaseAgeExclude:
-  - "katex@0.18.0"
-  - "@nuxt/kit@4.5.1"
-  - "@nuxt/nitro-server@4.5.1"
-  - "@nuxt/schema@4.5.1"
-  - "@nuxt/vite-builder@4.5.1"
-  - "@nuxt/devtools@3.3.1"
-  - "nuxt@4.5.1"
-  - "@open-file-viewer/core@0.1.32"
-  - "@oxc-parser/binding-android-arm-eabi@0.142.0"
-  - "@oxc-parser/binding-android-arm64@0.142.0"
-  - "@oxc-parser/binding-darwin-arm64@0.142.0"
-  - "@oxc-parser/binding-darwin-x64@0.142.0"
-  - "@oxc-parser/binding-freebsd-x64@0.142.0"
-  - "@oxc-parser/binding-linux-arm-gnueabihf@0.142.0"
-  - "@oxc-parser/binding-linux-arm-musleabihf@0.142.0"
-  - "@oxc-parser/binding-linux-arm64-gnu@0.142.0"
-  - "@oxc-parser/binding-linux-arm64-musl@0.142.0"
-  - "@oxc-parser/binding-linux-ppc64-gnu@0.142.0"
-  - "@oxc-parser/binding-linux-riscv64-gnu@0.142.0"
-  - "@oxc-parser/binding-linux-riscv64-musl@0.142.0"
-  - "@oxc-parser/binding-linux-s390x-gnu@0.142.0"
-  - "@oxc-parser/binding-linux-x64-gnu@0.142.0"
-  - "@oxc-parser/binding-linux-x64-musl@0.142.0"
-  - "@oxc-parser/binding-openharmony-arm64@0.142.0"
-  - "@oxc-parser/binding-wasm32-wasi@0.142.0"
-  - "@oxc-parser/binding-win32-arm64-msvc@0.142.0"
-  - "@oxc-parser/binding-win32-ia32-msvc@0.142.0"
-  - "@oxc-parser/binding-win32-x64-msvc@0.142.0"
-  - "@oxc-project/types@0.142.0"
-  - "oxc-parser@0.142.0"
-  - "@oxfmt/binding-android-arm-eabi@0.61.0"
-  - "@oxfmt/binding-android-arm64@0.61.0"
-  - "@oxfmt/binding-darwin-arm64@0.61.0"
-  - "@oxfmt/binding-darwin-x64@0.61.0"
-  - "@oxfmt/binding-freebsd-x64@0.61.0"
-  - "@oxfmt/binding-linux-arm-gnueabihf@0.61.0"
-  - "@oxfmt/binding-linux-arm-musleabihf@0.61.0"
-  - "@oxfmt/binding-linux-arm64-gnu@0.61.0"
-  - "@oxfmt/binding-linux-arm64-musl@0.61.0"
-  - "@oxfmt/binding-linux-ppc64-gnu@0.61.0"
-  - "@oxfmt/binding-linux-riscv64-gnu@0.61.0"
-  - "@oxfmt/binding-linux-riscv64-musl@0.61.0"
-  - "@oxfmt/binding-linux-s390x-gnu@0.61.0"
-  - "@oxfmt/binding-linux-x64-gnu@0.61.0"
-  - "@oxfmt/binding-linux-x64-musl@0.61.0"
-  - "@oxfmt/binding-openharmony-arm64@0.61.0"
-  - "@oxfmt/binding-win32-arm64-msvc@0.61.0"
-  - "@oxfmt/binding-win32-ia32-msvc@0.61.0"
-  - "@oxfmt/binding-win32-x64-msvc@0.61.0"
-  - "oxfmt@0.61.0"
-  - "@oxlint/binding-android-arm-eabi@1.76.0"
-  - "@oxlint/binding-android-arm64@1.76.0"
-  - "@oxlint/binding-darwin-arm64@1.76.0"
-  - "@oxlint/binding-darwin-x64@1.76.0"
-  - "@oxlint/binding-freebsd-x64@1.76.0"
-  - "@oxlint/binding-linux-arm-gnueabihf@1.76.0"
-  - "@oxlint/binding-linux-arm-musleabihf@1.76.0"
-  - "@oxlint/binding-linux-arm64-gnu@1.76.0"
-  - "@oxlint/binding-linux-arm64-musl@1.76.0"
-  - "@oxlint/binding-linux-ppc64-gnu@1.76.0"
-  - "@oxlint/binding-linux-riscv64-gnu@1.76.0"
-  - "@oxlint/binding-linux-riscv64-musl@1.76.0"
-  - "@oxlint/binding-linux-s390x-gnu@1.76.0"
-  - "@oxlint/binding-linux-x64-gnu@1.76.0"
-  - "@oxlint/binding-linux-x64-musl@1.76.0"
-  - "@oxlint/binding-openharmony-arm64@1.76.0"
-  - "@oxlint/binding-win32-arm64-msvc@1.76.0"
-  - "@oxlint/binding-win32-ia32-msvc@1.76.0"
-  - "@oxlint/binding-win32-x64-msvc@1.76.0"
-  - "oxlint@1.76.0"
-  - "@tanstack/virtual-core@3.17.8"
-  - "@tanstack/vue-virtual@3.13.36"
+  # Reviewed upgrade set. Keep exceptions version-specific so later releases still observe pnpm's
+  # release-age policy; frozen installs in Docker must accept the same lockfile as local installs.
+  - "emf-converter@4.11.2"
+  - "@nuxt/kit@4.6.0"
+  - "@ai-sdk/gateway@4.0.116"
+  - "@ai-sdk/provider-utils@5.0.62"
+  - "@ai-sdk/provider@4.0.29"
+  - "@lucide/vue@1.59.0"
+  - "@nuxt/kit@4.6.2"
+  - "@nuxt/nitro-server@4.6.2"
+  - "@nuxt/schema@4.6.2"
+  - "@nuxt/vite-builder@4.6.2"
+  - "@nuxt/vite-server@4.6.2"
+  - "@tanstack/virtual-core@3.19.6"
+  - "@tanstack/vue-virtual@3.13.47"
+  - "@turbo/darwin-64@2.11.9"
+  - "@turbo/darwin-arm64@2.11.9"
+  - "@turbo/linux-64@2.11.9"
+  - "@turbo/linux-arm64@2.11.9"
+  - "@turbo/windows-64@2.11.9"
+  - "@turbo/windows-arm64@2.11.9"
+  - "ai@7.0.143"
+  - "cssnano@9.9.0"
+  - "dockview-core@8.6.0"
+  - "dockview@8.6.0"
+  - "dockview-vue@8.6.0"
+  - "nuxt@4.6.2"
+  - "turbo@2.11.9"
 
 overrides:
-  crossws: 0.4.7
-
-patchedDependencies:
-  '@tanstack/virtual-core@3.17.8': patches/@tanstack__virtual-core@3.17.8.patch
+  # Nitro 2 still uses H3 1's event/response APIs; H3 2 requires Nitro 3. Keep the application's
+  # direct H3 version aligned with Nuxt's runtime instead of mixing two incompatible event APIs.
+  # CrossWS 0.4 supplies the binary-message API used by our shared terminal transport.
+  crossws: 0.4.12
+  # Open File Viewer still requests EMF 3, which statically imports Node-only canvas bindings.
+  # EMF 4 exposes a real browser condition and retains convertMetafileToDataUrl's options API.
+  # Select that upstream browser implementation instead of maintaining aliases or native stubs.
+  emf-converter: 4.11.2
+  # The plugin's default range remains on KaTeX 0.18. Keep its renderer and our 0.19 CSS/fonts
+  # on the same release; the public renderToString API is unchanged by the strict-mode update.
+  "@mdit/plugin-katex>katex": 0.19.0

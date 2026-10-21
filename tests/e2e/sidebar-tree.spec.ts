@@ -25,10 +25,10 @@ test("toggles an expanded project closed from the desktop sidebar", async ({ pag
   await openApp(page);
   await seedGatewayThread(page, {
     hostId: 101,
-    projectId: null,
+    cwd: null,
     host: { ...defaultGatewayHost(101), name: "Toggle Host" },
     project: {
-      ...defaultGatewayProject(101, 201),
+      ...defaultGatewayProject(101, "/workspace/toggle"),
       name: "Toggle Project",
       remotePath: "/workspace/toggle",
     },
@@ -44,19 +44,19 @@ test("toggles an expanded project closed from the desktop sidebar", async ({ pag
   await page.evaluate(() => {
     const driver = window.__codexGatewayE2e;
     if (!driver) throw new Error("Gateway E2E driver is unavailable");
-    driver.catalog.selectProject = async (projectId: number) => {
+    driver.catalog.selectProject = async (cwd: string) => {
       const { navigation } = driver;
-      navigation.selectedProjectId = projectId;
+      navigation.selectedCwd = cwd;
       navigation.selectedThreadId = null;
     };
   });
 
   await expect(page.getByTestId("desktop-layout")).toBeVisible();
-  await expect(page.getByTestId("project-button-201")).toBeVisible();
-  await page.getByTestId("project-button-201").click();
+  await expect(page.getByTestId("project-button-/workspace/toggle")).toBeVisible();
+  await page.getByTestId("project-button-/workspace/toggle").click();
   await expect(page.getByTestId("thread-button-toggle-thread")).toBeVisible();
 
-  await page.getByTestId("project-button-201").click();
+  await page.getByTestId("project-button-/workspace/toggle").click();
   await expect(page.getByTestId("thread-button-toggle-thread")).toBeHidden();
 });
 
@@ -64,11 +64,11 @@ test("marks completed threads as needing review until they are opened", async ({
   await openApp(page);
   await seedGatewayThread(page, {
     hostId: 102,
-    projectId: 202,
+    cwd: "/workspace/review",
     threadId: "selected-thread",
     host: { ...defaultGatewayHost(102), name: "Review Host" },
     project: {
-      ...defaultGatewayProject(102, 202),
+      ...defaultGatewayProject(102, "/workspace/review"),
       name: "Review Project",
       remotePath: "/workspace/review",
     },
@@ -95,7 +95,7 @@ test("marks completed threads as needing review until they are opened", async ({
       "review-thread": {
         thread: { id: "review-thread", name: "Review Thread" },
         history: { thread: { id: "review-thread", turns: [] } },
-        projectId: 202,
+        cwd: "/workspace/review",
         runtimeStatus: "completed",
       },
     },
@@ -129,7 +129,7 @@ test("keeps non-pinned main threads in recent activity for the page session", as
     sshHost: "activity.example.internal",
   };
   const project = {
-    ...defaultGatewayProject(104, 204),
+    ...defaultGatewayProject(104, "/workspace/activity"),
     name: "Activity Project",
     remotePath: "/workspace/activity",
   };
@@ -143,7 +143,6 @@ test("keeps non-pinned main threads in recent activity for the page session", as
       config.gatewayConfig.pinnedThreads = [
         {
           hostId: host.id,
-          projectId: project.id,
           threadId: "already-pinned",
           title: "Already pinned",
         },
@@ -154,7 +153,6 @@ test("keeps non-pinned main threads in recent activity for the page session", as
           {
             id: "recent-main",
             title: "Recent main thread",
-            projectId: project.id,
             cwd: project.remotePath,
             parentThreadId: null,
             agentNickname: null,
@@ -167,7 +165,6 @@ test("keeps non-pinned main threads in recent activity for the page session", as
           {
             id: "already-pinned",
             title: "Already pinned",
-            projectId: project.id,
             cwd: null,
             parentThreadId: null,
             agentNickname: null,
@@ -180,7 +177,6 @@ test("keeps non-pinned main threads in recent activity for the page session", as
           {
             id: "spawned-child",
             title: "Spawned child",
-            projectId: project.id,
             parentThreadId: "recent-main",
             cwd: null,
             agentNickname: null,
@@ -193,7 +189,6 @@ test("keeps non-pinned main threads in recent activity for the page session", as
           {
             id: "managed-child-before-parent-hydration",
             title: "Inherited parent title",
-            projectId: project.id,
             agentRole: "explorer",
             agentNickname: "Scout",
             cwd: null,
@@ -238,10 +233,10 @@ test("sorts pinned threads for display without rewriting persisted pin order", a
     { ...defaultGatewayHost(301), name: "Alpha Host" },
   ];
   const pinnedThreads = [
-    { hostId: 302, projectId: null, threadId: "z-alpha", title: "Alpha Thread" },
-    { hostId: 301, projectId: null, threadId: "a-zulu", title: "Zulu Thread" },
-    { hostId: 301, projectId: null, threadId: "a-alpha-b", title: "Alpha Thread" },
-    { hostId: 301, projectId: null, threadId: "a-alpha-a", title: "Alpha Thread" },
+    { hostId: 302, threadId: "z-alpha", title: "Alpha Thread" },
+    { hostId: 301, threadId: "a-zulu", title: "Zulu Thread" },
+    { hostId: 301, threadId: "a-alpha-b", title: "Alpha Thread" },
+    { hostId: 301, threadId: "a-alpha-a", title: "Alpha Thread" },
   ];
   await page.evaluate(
     ({ hosts, pinnedThreads }) => {
@@ -273,12 +268,12 @@ test("long expanded tree labels truncate without displacing trailing statuses", 
 }) => {
   await openApp(page);
   const hostId = 103;
-  const projectId = 203;
+  const cwd = "/workspace/sidebar-layout";
   const threadId = "long-sidebar-thread";
   const longTitle = `Long thread ${"unbroken-segment-".repeat(18)}`;
   await seedGatewayThread(page, {
     hostId,
-    projectId,
+    cwd,
     threadId: null,
     host: {
       ...defaultGatewayHost(hostId),
@@ -286,7 +281,7 @@ test("long expanded tree labels truncate without displacing trailing statuses", 
       sshHost: "very-long-hostname.example.internal",
     },
     project: {
-      ...defaultGatewayProject(hostId, projectId),
+      ...defaultGatewayProject(hostId, cwd),
       name: `Long project ${"project-segment-".repeat(12)}`,
       remotePath: "/workspace/sidebar-layout",
     },
@@ -298,7 +293,7 @@ test("long expanded tree labels truncate without displacing trailing statuses", 
       [threadId]: {
         thread: { id: threadId, name: longTitle },
         history: { thread: { id: threadId, turns: [] } },
-        projectId,
+        cwd,
         runtimeStatus: "running",
       },
     },

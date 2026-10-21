@@ -11,6 +11,11 @@ import {
   type RealtimeThreadSubscriptionState,
 } from "./thread-subscriptions";
 import { realtimeRequestContext } from "./request-context";
+import {
+  decodeTerminalStreamFrame,
+  decodeTerminalTextPayload,
+  terminalStreamOpcode,
+} from "~~/shared/runtime/terminal-stream";
 
 type RealtimeConnection = ReturnType<typeof createRealtimeConnection>;
 type RealtimeRequestBroker = ReturnType<typeof createRealtimeRequestBroker>;
@@ -23,6 +28,7 @@ export type GatewayRealtimeSetup = ToRefs<RealtimeConnectionState> &
     resetForSessionChange: () => void;
     scheduleReconnect: RealtimeConnection["scheduleReconnect"];
     send: RealtimeConnection["send"];
+    sendBinary: RealtimeConnection["sendBinary"];
     request: RealtimeRequestBroker["request"];
     installHealthCheck: RealtimeConnection["installHealthCheck"];
     checkConnection: RealtimeConnection["checkConnection"];
@@ -43,6 +49,7 @@ export const useGatewayRealtimeStore = defineStore("gateway-realtime", (): Gatew
   const connection = createRealtimeConnection({
     disconnectedMessage: () => t("app.realtimeDisconnected"),
     onMessage: receiveServerMessage,
+    onBinaryMessage: receiveBinaryMessage,
     onDisconnected: (error) => rejectPendingRequests(error),
   });
   const requestBroker = createRealtimeRequestBroker({
@@ -73,6 +80,17 @@ export const useGatewayRealtimeStore = defineStore("gateway-realtime", (): Gatew
     dispatchServerMessage(message);
   }
 
+  function receiveBinaryMessage(data: Uint8Array) {
+    const frame = decodeTerminalStreamFrame(data);
+    if (frame?.opcode !== terminalStreamOpcode.output) return;
+    const output = decodeTerminalTextPayload(frame);
+    if (output === null) return;
+    gatewayDomainEvents.emit("realtime-terminal-output", {
+      sessionId: frame.sessionId,
+      data: output,
+    });
+  }
+
   function markReady() {
     connection.markReady();
   }
@@ -80,7 +98,7 @@ export const useGatewayRealtimeStore = defineStore("gateway-realtime", (): Gatew
   function resetForSessionChange() {
     connection.reset();
     subscriptions.reset();
-    gatewayDomainEvents.emit("gateway-session-reset", {});
+    gatewayDomainEvents.emit("gateway-session-reset");
   }
 
   async function restoreTerminalSessions() {
@@ -99,6 +117,7 @@ export const useGatewayRealtimeStore = defineStore("gateway-realtime", (): Gatew
     resetForSessionChange,
     scheduleReconnect: connection.scheduleReconnect,
     send: connection.send,
+    sendBinary: connection.sendBinary,
     request: requestBroker.request,
     installHealthCheck: connection.installHealthCheck,
     checkConnection: connection.checkConnection,

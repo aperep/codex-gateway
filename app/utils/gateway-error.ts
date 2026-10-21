@@ -1,6 +1,7 @@
 import { FetchError } from "ofetch";
 import { recordFromUnknown } from "~~/shared/utils/records";
 import { firstNonEmptyString } from "~~/shared/utils/strings";
+import { APP_SERVER_SHUTTING_DOWN_ERROR_CODE } from "~~/shared/gateway-errors";
 
 export interface GatewayErrorPayload {
   code?: string;
@@ -34,14 +35,30 @@ export function gatewayErrorPayload(error: unknown): GatewayErrorPayload {
   return payload ?? {};
 }
 
-export function gatewayErrorMessage(error: unknown, fallback: string) {
+export function gatewayErrorMessage(
+  error: unknown,
+  fallback: string,
+  labels?: { serverShuttingDown: string },
+) {
   const payload = gatewayErrorPayload(error);
+  if (
+    labels !== undefined &&
+    (payload.code ?? payload.details?.code) === APP_SERVER_SHUTTING_DOWN_ERROR_CODE
+  ) {
+    return labels.serverShuttingDown;
+  }
   const root = recordFromUnknown(error);
   return (
     firstNonEmptyString([
       payload.message,
       payload.statusMessage,
-      typeof root?.message === "string" ? root.message : null,
+      // Error.message is non-enumerable; Zod's record projection only preserves custom fields.
+      // Read the native Error contract here so every caller retains the SSH/RPC/WS failure reason.
+      error instanceof Error
+        ? error.message
+        : typeof root?.message === "string"
+          ? root.message
+          : null,
     ]) ?? fallback
   );
 }

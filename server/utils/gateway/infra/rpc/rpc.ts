@@ -11,14 +11,12 @@ import {
   type RpcTransport,
 } from "./rpc-transport";
 import { type RpcTransportCloseDetail } from "./rpc-errors";
-import { parseInitializeResponse } from "~~/shared/runtime/app-server";
 
 export type RpcNotificationHandler = (message: RpcEnvelope) => void;
 export type RpcResponseParser<T> = (value: unknown) => T;
 
 export interface CodexRpcClientOptions {
   skipVersionCheck?: boolean;
-  requireExistingAppServer?: boolean;
   transportFactory?: (host: HostRecord, options: CodexRpcTransportOptions) => RpcTransport;
 }
 
@@ -28,7 +26,7 @@ const officialTuiClientInfo = {
   version: SUPPORTED_CODEX_VERSION,
 };
 
-type CodexRpcClientEvents = {
+export type CodexRpcClientEvents = {
   notification: RpcEnvelope;
   request: RpcEnvelope;
   stderr: string;
@@ -42,7 +40,6 @@ export class CodexRpcClient extends EventEmitter<CodexRpcClientEvents> {
   private connectionGeneration = 0;
   private readonly requests = new RpcRequestBroker();
   private transport: RpcTransport | null = null;
-  private deferredUpgrade = false;
 
   constructor(
     private readonly host: HostRecord,
@@ -77,7 +74,6 @@ export class CodexRpcClient extends EventEmitter<CodexRpcClientEvents> {
         ? null
         : await codexRuntime.ensureCodexVersion(this.host);
     this.assertCurrentConnection(generation);
-    this.deferredUpgrade = versionState?.deferredUpgrade === true;
 
     try {
       await this.connectRemoteProxyWebSocket(generation);
@@ -112,6 +108,15 @@ export class CodexRpcClient extends EventEmitter<CodexRpcClientEvents> {
     );
     this.assertCurrentConnection(generation);
     this.notify("initialized", {});
+    // Codex owns legacy-rollout conversion. Enabling the official background migration after
+    // initialization lets the daemon atomically project old JSONL into its paginated store, while
+    // its own journal and busy retry policy handle active desktop writers. Gateway must not parse
+    // or rewrite rollout files itself, because that would create a second history implementation.
+    await this.request(
+      "experimentalFeature/enablement/set",
+      { enablement: { background_paginated_rollout_migration: true } },
+      30_000,
+    );
     this.initialized = true;
     hostLifecycleBus.emit({
       hostId: this.host.id,
@@ -126,28 +131,6 @@ export class CodexRpcClient extends EventEmitter<CodexRpcClientEvents> {
         .filter((value): value is string => value !== null)
         .join("\n"),
     });
-  }
-
-  async probeRuntimeVersion() {
-    const generation = this.connectionGeneration;
-    await this.connectRemoteProxyWebSocket(generation);
-    try {
-      const result = await this.request(
-        "initialize",
-        {
-          clientInfo: {
-            ...officialTuiClientInfo,
-          },
-          capabilities: {},
-        },
-        30_000,
-        parseInitializeResponse,
-      );
-      this.notify("initialized", {});
-      return result.userAgent ?? null;
-    } finally {
-      this.close();
-    }
   }
 
   request(method: string, params?: unknown, timeoutMs?: number): Promise<unknown>;
@@ -200,18 +183,9 @@ export class CodexRpcClient extends EventEmitter<CodexRpcClientEvents> {
     this.transport = null;
   }
 
-  hasDeferredUpgrade() {
-    return this.deferredUpgrade;
-  }
-
-  resolveDeferredUpgrade() {
-    this.deferredUpgrade = false;
-  }
-
   private async connectRemoteProxyWebSocket(generation: number) {
     this.assertCurrentConnection(generation);
     const transportOptions: CodexRpcTransportOptions = {
-      requireExistingAppServer: this.options.requireExistingAppServer === true,
       onMessage: (payload) => this.handleMessage(payload),
       onStderr: (text) => this.emit("stderr", text),
       // A failed upgrade/retry attempt can close after its replacement transport is already live.

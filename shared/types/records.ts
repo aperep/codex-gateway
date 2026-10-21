@@ -17,15 +17,13 @@ export interface HostRecord {
 }
 
 export interface ProjectRecord {
-  id: number;
+  /** Runtime directory group, identified by hostId + remotePath; never persisted. */
   hostId: number;
   name: string;
   remotePath: string;
   createdAt: string;
   updatedAt: string;
 }
-
-export type ProjectDirectoryAvailability = "available" | "missing";
 
 export interface HostCreateInput {
   name: string;
@@ -46,8 +44,6 @@ export interface ProjectCreateInput {
   name: string;
   remotePath: string;
 }
-
-export type ProjectUpdateInput = ProjectCreateInput;
 
 interface RpcTrace {
   traceparent?: string | null;
@@ -108,12 +104,13 @@ export function rpcEnvelopeCreatedAt(payload: unknown, fallback = new Date()): s
   return Number.isFinite(emittedAt.getTime()) ? emittedAt.toISOString() : fallback.toISOString();
 }
 
+import type { AgentEvent } from "../agent/events";
+
 export interface GatewayEvent {
   id: number;
   hostId: number;
   threadId: string;
-  method: string;
-  payload: RpcEnvelope;
+  event: AgentEvent;
   createdAt: string;
 }
 import { recordFromUnknown } from "../utils/records";

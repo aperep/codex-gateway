@@ -2,7 +2,6 @@ import type { RemoteDirectoryResult } from "~~/shared/types";
 
 export interface FileWorkspaceScope {
   hostId: number;
-  projectId: number | null;
   threadId: string;
   rootPath: string;
   openPaths: string[];
@@ -21,7 +20,7 @@ export interface RemoteDirectoryState extends RemoteDirectoryResult {
 
 export interface OpenWorkspaceFileInput {
   hostId: number;
-  projectId?: number | null;
+  cwd?: string | null;
   threadId: string;
   path: string;
   line?: number | null;

@@ -1,6 +1,5 @@
 import type { ComposerTurnOptions } from "~~/shared/types";
-import { INITIAL_TURN_PAGE_LIMIT } from "~~/shared/config";
-import { threadTurnsFromHistory } from "~~/shared/thread-history/shape";
+import { INITIAL_TIMELINE_PAGE_LIMIT } from "~~/shared/config";
 import { useGatewayCatalogStore } from "@/stores/gateway-catalog";
 import { useGatewayBootstrapStore } from "@/stores/gateway-bootstrap";
 import { useGatewayComposerStore } from "@/stores/gateway-composer";
@@ -11,10 +10,8 @@ import {
   applyStartedThreadResult,
   applyThreadSnapshotResult,
 } from "@/stores/gateway/thread-open/hydration";
-import {
-  requestActivateThreadSnapshot,
-  requestStartThread,
-} from "@/stores/gateway/thread-open/transport";
+import { requestStartThread } from "@/stores/gateway/thread-open/transport";
+import { coordinateThreadSnapshot } from "@/stores/gateway/thread-open/snapshot-coordinator";
 import { messageFromError, pinnedKey } from "@/stores/gateway/thread-utils/identity";
 import {
   activateThreadView,
@@ -59,17 +56,14 @@ export function createThreadOpenActions() {
 
     async openThread(
       threadId: string,
-      context?: { hostId?: number; projectId?: number | null; replaceRoute?: boolean },
+      context?: { hostId?: number; cwd?: string | null; replaceRoute?: boolean },
     ) {
       const gateway = useGatewayCatalogStore();
       const navigation = useGatewayNavigationStore();
       const views = useGatewayThreadViewStore();
       cacheSelectedThreadView();
       const targetHostId = context?.hostId ?? navigation.selectedHostId;
-      const targetProjectId =
-        context && "projectId" in context
-          ? (context.projectId ?? null)
-          : navigation.selectedProjectId;
+      const targetCwd = context?.cwd ?? null;
       if (targetHostId === null || targetHostId === undefined) return;
       clearThreadCompletionAttention(targetHostId, threadId);
       if (
@@ -89,31 +83,24 @@ export function createThreadOpenActions() {
         gateway.models = [];
         gateway.modelsHostId = null;
       }
-      activatePendingThreadView(targetHostId, targetProjectId, threadId);
+      activatePendingThreadView(targetHostId, targetCwd, threadId);
       void gateway.ensureSelectedHostModels();
       if (restoreThreadView(targetHostId, threadId)) {
-        const cachedTurnLimit = Math.max(
-          INITIAL_TURN_PAGE_LIMIT,
-          threadTurnsFromHistory(views.history).length,
-        );
         finishThreadSelection(threadId, context?.replaceRoute);
         void refreshGoalAfterOpen(targetHostId, threadId);
         requestScrollToLatest();
         void syncOpenThreadFromServer({
           hostId: targetHostId,
-          projectId: targetProjectId,
           threadId,
           viewEpoch,
           replaceRoute: context?.replaceRoute,
           showLoading: false,
           scrollToLatest: false,
-          limit: cachedTurnLimit,
         });
         return;
       }
       await syncOpenThreadFromServer({
         hostId: targetHostId,
-        projectId: targetProjectId,
         threadId,
         viewEpoch,
         replaceRoute: context?.replaceRoute,
@@ -121,11 +108,7 @@ export function createThreadOpenActions() {
       });
     },
 
-    async openThreadPreview(
-      hostId: number,
-      threadId: string,
-      context: { projectId?: number | null; limit?: number } = {},
-    ) {
+    async openThreadPreview(hostId: number, threadId: string, context: { limit?: number } = {}) {
       const gateway = useGatewayBootstrapStore();
       const views = useGatewayThreadViewStore();
       const key = pinnedKey(hostId, threadId);
@@ -144,21 +127,19 @@ export function createThreadOpenActions() {
         return existing;
       }
       const loadToken = beginPreviewLoad(key);
-      const sessionIsCurrent = captureSessionEpoch();
       patchThreadView(hostId, threadId, {
-        ...(existing ?? { projectId: context.projectId ?? null }),
+        ...(existing ?? { cwd: null }),
         loading: true,
         error: null,
       });
-      try {
-        const result = await requestActivateThreadSnapshot({
+      return coordinateThreadSnapshot({
+        input: {
           hostId,
-          projectId: context.projectId ?? null,
           threadId,
-          limit: context.limit ?? INITIAL_TURN_PAGE_LIMIT,
-        });
-        if (!sessionIsCurrent()) return undefined;
-        if (previewLoadTokens.get(key) !== loadToken) {
+          limit: context.limit ?? INITIAL_TIMELINE_PAGE_LIMIT,
+        },
+        accept: () => previewLoadTokens.get(key) === loadToken,
+        discard: () => {
           // thread.activate subscribes upstream before returning its snapshot. If the owning
           // panel disappeared while awaiting it, explicitly release that late subscription.
           // A newer generation may represent a reopened panel and owns the same app-server
@@ -167,44 +148,43 @@ export function createThreadOpenActions() {
             (panel) => pinnedKey(panel.hostId, panel.threadId) === key,
           );
           if (!panelStillOpen) useGatewayRealtimeStore().cancelThreadEvents(hostId, threadId);
-          return undefined;
-        }
-        upsertThreadView({
-          hostId,
-          projectId: result.projectId ?? context.projectId ?? null,
-          threadId,
-          currentThread: result.thread,
-          history: result.history,
-          timelineTurns: result.history.thread.turns,
-          events: [...result.recentEvents],
-          olderTurnsCursor: result.turnsPage.nextCursor,
-          newerTurnsCursor: result.turnsPage.backwardsCursor,
-          lastEventId: result.lastEventId,
-          eventEpoch: result.eventEpoch,
-          loading: false,
-          error: null,
-        });
-        useGatewayRealtimeStore().rememberThreadSubscription(
-          hostId,
-          threadId,
-          result.lastEventId,
-          result.eventEpoch,
-        );
-        return views.threadViews[key];
-      } catch (error: unknown) {
-        if (!sessionIsCurrent()) return undefined;
-        if (previewLoadTokens.get(key) !== loadToken) return undefined;
-        patchThreadView(hostId, threadId, {
-          projectId: context.projectId ?? existing?.projectId ?? null,
-          loading: false,
-          error: messageFromError(error, gateway.t("app.openThreadFailed"), gateway.errorLabels),
-        });
-        throw error;
-      } finally {
+        },
+        commit: (result) => {
+          upsertThreadView({
+            hostId,
+            cwd: result.thread.cwd,
+            threadId,
+            currentThread: result.thread,
+            history: result.history,
+            events: [...result.recentEvents],
+            oldestTimelineCursor: result.oldestTimelineCursor,
+            lastEventId: result.lastEventId,
+            appliedEventId: existing?.appliedEventId ?? result.lastEventId,
+            eventEpoch: result.eventEpoch,
+            loading: false,
+            error: null,
+          });
+          useGatewayRealtimeStore().rememberThreadSubscription(
+            hostId,
+            threadId,
+            result.lastEventId,
+            result.eventEpoch,
+          );
+          return views.threadViews[key];
+        },
+        fail: (error) => {
+          if (previewLoadTokens.get(key) !== loadToken) return;
+          patchThreadView(hostId, threadId, {
+            cwd: existing?.cwd ?? null,
+            loading: false,
+            error: messageFromError(error, gateway.t("app.openThreadFailed"), gateway.errorLabels),
+          });
+        },
+        rethrow: true,
+      }).finally(() => {
         // Compare identity before deleting: a reopened panel may already own a newer request.
-        // The obsolete request must neither clear that token nor unsubscribe its replacement.
         if (previewLoadTokens.get(key) === loadToken) previewLoadTokens.delete(key);
-      }
+      });
     },
 
     async refreshSelectedThreadSnapshot(
@@ -214,41 +194,38 @@ export function createThreadOpenActions() {
       const navigation = useGatewayNavigationStore();
       const views = useGatewayThreadViewStore();
       const hostId = navigation.selectedHostId;
-      const projectId = navigation.selectedProjectId;
       const threadId = navigation.selectedThreadId;
       if (hostId === null || threadId === null || threadId === "") return;
       const viewEpoch = views.viewEpoch;
-      const sessionIsCurrent = captureSessionEpoch();
-      if (options.showLoading === true) views.loading = true;
-      try {
-        const result = await requestActivateThreadSnapshot({ hostId, projectId, threadId });
-        if (
-          !sessionIsCurrent() ||
+      await coordinateThreadSnapshot({
+        input: { hostId, threadId },
+        setLoading:
+          options.showLoading === true ? (loading) => (views.loading = loading) : undefined,
+        accept: (result) =>
           views.viewEpoch !== viewEpoch ||
           navigation.selectedHostId !== hostId ||
           navigation.selectedThreadId !== threadId ||
           (result.eventEpoch === views.eventEpoch && result.lastEventId < views.lastEventId)
-        )
-          return;
-        applyThreadSnapshotResult(threadId, result);
-        cacheSelectedThreadView();
-        useGatewayRealtimeStore().rememberThreadSubscription(
-          hostId,
-          threadId,
-          result.lastEventId,
-          result.eventEpoch,
-        );
-        void refreshGoalAfterOpen(hostId, threadId);
-        if (options.scrollToLatest === true) requestScrollToLatest();
-      } catch (error: unknown) {
-        if (!sessionIsCurrent()) return;
-        gateway.setError(
-          messageFromError(error, gateway.t("app.openThreadFailed"), gateway.errorLabels),
-          { hostId, projectId, threadId },
-        );
-      } finally {
-        if (options.showLoading === true && sessionIsCurrent()) views.loading = false;
-      }
+            ? false
+            : true,
+        commit: (result) => {
+          applyThreadSnapshotResult(threadId, result);
+          cacheSelectedThreadView();
+          useGatewayRealtimeStore().rememberThreadSubscription(
+            hostId,
+            threadId,
+            result.lastEventId,
+            result.eventEpoch,
+          );
+          void refreshGoalAfterOpen(hostId, threadId);
+          if (options.scrollToLatest === true) requestScrollToLatest();
+        },
+        fail: (error) =>
+          gateway.setError(
+            messageFromError(error, gateway.t("app.openThreadFailed"), gateway.errorLabels),
+            { hostId, threadId },
+          ),
+      });
     },
 
     recoverThreadEventGap(hostId: number, threadId: string) {
@@ -276,10 +253,9 @@ export function createThreadOpenActions() {
         return false;
       }
       navigation.selectedHostId = last.hostId;
-      navigation.selectedProjectId = last.projectId;
+      navigation.selectedCwd = null;
       await useGatewayThreadViewStore().openThread(last.threadId, {
         hostId: last.hostId,
-        projectId: last.projectId,
         replaceRoute: true,
       });
       syncSelectedRoute({ replace: true });
@@ -288,15 +264,14 @@ export function createThreadOpenActions() {
 
     async startThread(
       options: ComposerTurnOptions = {},
-      context?: { hostId?: number; projectId?: number | null },
+      context?: { hostId?: number; cwd?: string | null },
     ) {
       const navigation = useGatewayNavigationStore();
       cacheSelectedThreadView();
       const viewEpoch = beginViewTransition();
-      if (context?.hostId !== undefined)
-        activateThreadView(context.hostId, context.projectId ?? null);
-      else if (context && "projectId" in context) {
-        navigation.selectedProjectId = context.projectId ?? null;
+      if (context?.hostId !== undefined) activateThreadView(context.hostId, context.cwd ?? null);
+      else if (context && "cwd" in context) {
+        navigation.selectedCwd = context.cwd ?? null;
         clearCurrentThreadView();
       }
       if (navigation.selectedHostId === null) return;
@@ -335,58 +310,56 @@ async function recoverThreadSnapshot(hostId: number, threadId: string) {
     return;
   }
 
-  const sessionIsCurrent = captureSessionEpoch();
-  try {
-    const result = await requestActivateThreadSnapshot({
+  await coordinateThreadSnapshot({
+    input: {
       hostId,
-      projectId: existing?.projectId ?? navigation.selectedProjectId,
       threadId,
-    });
-    if (!sessionIsCurrent()) return;
-    const stillSelected =
-      navigation.selectedHostId === hostId && navigation.selectedThreadId === threadId;
-    const retainedView = views.threadViews[key];
-    if (!stillSelected && retainedView === undefined) {
-      useGatewayRealtimeStore().cancelThreadEvents(hostId, threadId);
-      return;
-    }
-
-    if (stillSelected) {
-      // A gap is an explicit declaration that incremental state is incomplete. Replace it with
-      // the authoritative snapshot even if its event id is lower after a server restart; the
-      // ordinary refresh path intentionally rejects lower ids and is therefore not suitable here.
-      applyThreadSnapshotResult(threadId, result);
-      cacheSelectedThreadView();
-    } else {
-      upsertThreadView({
+    },
+    accept: () => {
+      const stillSelected =
+        navigation.selectedHostId === hostId && navigation.selectedThreadId === threadId;
+      return stillSelected || views.threadViews[key] !== undefined;
+    },
+    discard: () => useGatewayRealtimeStore().cancelThreadEvents(hostId, threadId),
+    commit: (result) => {
+      const stillSelected =
+        navigation.selectedHostId === hostId && navigation.selectedThreadId === threadId;
+      const retainedView = views.threadViews[key];
+      if (stillSelected) {
+        // A gap is an explicit declaration that incremental state is incomplete. Replace it with
+        // the authoritative snapshot even if its event id is lower after a server restart; the
+        // ordinary refresh path intentionally rejects lower ids and is therefore not suitable here.
+        applyThreadSnapshotResult(threadId, result, true);
+        cacheSelectedThreadView();
+      } else {
+        upsertThreadView({
+          hostId,
+          cwd: result.thread.cwd,
+          threadId,
+          currentThread: result.thread,
+          history: result.history,
+          events: [...result.recentEvents],
+          oldestTimelineCursor: result.oldestTimelineCursor,
+          lastEventId: result.lastEventId,
+          appliedEventId: retainedView?.appliedEventId ?? result.lastEventId,
+          eventEpoch: result.eventEpoch,
+          loading: false,
+          error: null,
+        });
+      }
+      useGatewayRealtimeStore().rememberThreadSubscription(
         hostId,
-        projectId: result.projectId ?? retainedView?.projectId ?? null,
         threadId,
-        currentThread: result.thread,
-        history: result.history,
-        timelineTurns: result.history.thread.turns,
-        events: [...result.recentEvents],
-        olderTurnsCursor: result.turnsPage.nextCursor,
-        newerTurnsCursor: result.turnsPage.backwardsCursor,
-        lastEventId: result.lastEventId,
-        eventEpoch: result.eventEpoch,
-        loading: false,
-        error: null,
-      });
-    }
-    useGatewayRealtimeStore().rememberThreadSubscription(
-      hostId,
-      threadId,
-      result.lastEventId,
-      result.eventEpoch,
-    );
-  } catch (error: unknown) {
-    if (!sessionIsCurrent()) return;
-    gateway.setError(
-      messageFromError(error, gateway.t("app.openThreadFailed"), gateway.errorLabels),
-      { hostId, threadId, projectId: existing?.projectId ?? null },
-    );
-  }
+        result.lastEventId,
+        result.eventEpoch,
+      );
+    },
+    fail: (error) =>
+      gateway.setError(
+        messageFromError(error, gateway.t("app.openThreadFailed"), gateway.errorLabels),
+        { hostId, threadId },
+      ),
+  });
 }
 
 function beginPreviewLoad(key: string) {
@@ -397,7 +370,6 @@ function beginPreviewLoad(key: string) {
 
 async function syncOpenThreadFromServer(input: {
   hostId: number;
-  projectId: number | null;
   threadId: string;
   viewEpoch: number;
   replaceRoute?: boolean;
@@ -407,31 +379,28 @@ async function syncOpenThreadFromServer(input: {
 }) {
   const gateway = useGatewayBootstrapStore();
   const views = useGatewayThreadViewStore();
-  const sessionIsCurrent = captureSessionEpoch();
-  if (input.showLoading) views.loading = true;
   gateway.clearError();
-  try {
-    const result = await requestActivateThreadSnapshot(input);
-    if (
-      !sessionIsCurrent() ||
+  await coordinateThreadSnapshot({
+    input,
+    setLoading: input.showLoading ? (loading) => (views.loading = loading) : undefined,
+    accept: (result) =>
       !isCurrentViewTransition(input.viewEpoch) ||
       (result.eventEpoch === views.eventEpoch && result.lastEventId < views.lastEventId)
-    )
-      return;
-    applyThreadSnapshotResult(input.threadId, result);
-    cacheSelectedThreadView();
-    finishThreadSelection(input.threadId, input.replaceRoute);
-    void refreshGoalAfterOpen(input.hostId, input.threadId);
-    if (input.scrollToLatest ?? true) requestScrollToLatest();
-  } catch (error: unknown) {
-    if (!sessionIsCurrent()) return;
-    gateway.setError(
-      messageFromError(error, gateway.t("app.openThreadFailed"), gateway.errorLabels),
-      { hostId: input.hostId, projectId: input.projectId, threadId: input.threadId },
-    );
-  } finally {
-    if (input.showLoading && sessionIsCurrent()) views.loading = false;
-  }
+        ? false
+        : true,
+    commit: (result) => {
+      applyThreadSnapshotResult(input.threadId, result);
+      cacheSelectedThreadView();
+      finishThreadSelection(input.threadId, input.replaceRoute);
+      void refreshGoalAfterOpen(input.hostId, input.threadId);
+      if (input.scrollToLatest ?? true) requestScrollToLatest();
+    },
+    fail: (error) =>
+      gateway.setError(
+        messageFromError(error, gateway.t("app.openThreadFailed"), gateway.errorLabels),
+        { hostId: input.hostId, threadId: input.threadId },
+      ),
+  });
 }
 
 function finishThreadSelection(threadId: string, replaceRoute?: boolean) {
@@ -467,7 +436,7 @@ async function refreshGoalAfterOpen(hostId: number, threadId: string) {
     if (!sessionIsCurrent()) return;
     gateway.setError(
       messageFromError(error, gateway.t("app.refreshThreadGoalFailed"), gateway.errorLabels),
-      { hostId, threadId, projectId: navigation.selectedProjectId },
+      { hostId, threadId },
     );
   }
 }

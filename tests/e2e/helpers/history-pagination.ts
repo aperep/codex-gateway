@@ -1,9 +1,10 @@
 import type { Locator, Page } from "@playwright/test";
+import type { ThreadHistoryTurn } from "../../../shared/types";
 import {
-  installRealtimeThreadTurnsLoadRoute,
-  realtimeThreadTurnsLoadRequests,
-  releaseRealtimeThreadTurnsLoadRoute,
-  type ThreadTurnsLoadResponseInput,
+  installRealtimeThreadTimelineLoadRoute,
+  realtimeThreadTimelineLoadRequests,
+  releaseRealtimeThreadTimelineLoadRoute,
+  type ThreadTimelineLoadResponseInput,
 } from "./realtime-route";
 
 interface FrameTracker {
@@ -18,7 +19,12 @@ declare global {
   }
 }
 
-export function buildTextTurns(start: number, end: number, prefix: string, lineCount = 1) {
+export function buildTextTurns(
+  start: number,
+  end: number,
+  prefix: string,
+  lineCount = 1,
+): ThreadHistoryTurn[] {
   return Array.from({ length: end - start + 1 }, (_, index) => {
     const number = start + index;
     const label = String(number).padStart(3, "0");
@@ -55,19 +61,19 @@ export async function threadTurnCount(page: Page) {
   });
 }
 
-export async function installDeferredThreadTurnsLoadStub(
+export async function installDeferredThreadTimelineLoadStub(
   page: Page,
-  response: ThreadTurnsLoadResponseInput,
+  response: ThreadTimelineLoadResponseInput,
 ) {
-  installRealtimeThreadTurnsLoadRoute(page, response, true);
+  installRealtimeThreadTimelineLoadRoute(page, response, true);
 }
 
-export async function releaseDeferredThreadTurnsLoad(page: Page) {
-  releaseRealtimeThreadTurnsLoadRoute(page);
+export async function releaseDeferredThreadTimelineLoad(page: Page) {
+  releaseRealtimeThreadTimelineLoadRoute(page);
 }
 
-export async function threadTurnsLoadRequests(page: Page) {
-  return realtimeThreadTurnsLoadRequests(page);
+export async function threadTimelineLoadRequests(page: Page) {
+  return realtimeThreadTimelineLoadRequests(page);
 }
 
 export async function requestOlderTurnsFromStore(page: Page) {

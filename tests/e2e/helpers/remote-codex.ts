@@ -1,10 +1,10 @@
 import { expect, type Page } from "@playwright/test";
 import { readFile } from "node:fs/promises";
 import { z } from "zod";
-import { envFile, upgradeEnvFile } from "../docker-environment";
+import { envFile, mfaEnvFile, upgradeEnvFile } from "../docker-environment";
 import { connectTestSsh, execTestSsh } from "./ssh-client";
 
-export type RemoteRuntimeFixture = "empty-runtime" | "legacy-node" | "legacy-codex";
+export type RemoteRuntimeFixture = "empty-runtime" | "legacy-node" | "npm-codex" | "current-codex";
 
 const remoteCodexEnvSchema = z
   .object({
@@ -14,13 +14,17 @@ const remoteCodexEnvSchema = z
     password: z.string().min(1),
     projectPath: z.string().min(1),
     imagePath: z.string().min(1),
-    runtimeFixture: z.enum(["empty-runtime", "legacy-node", "legacy-codex"]).optional(),
+    runtimeFixture: z
+      .enum(["empty-runtime", "legacy-node", "npm-codex", "current-codex"])
+      .optional(),
     initialNodeVersion: z.string().min(1).nullable().optional(),
     initialCodexVersion: z.string().min(1).nullable().optional(),
+    initialCodexBin: z.string().min(1).nullable().optional(),
     supportedCodexVersion: z.string().min(1).optional(),
     testModel: z.string().min(1).optional(),
     codexBin: z.string().min(1).optional(),
     proxyUrl: z.string().min(1).nullable().optional(),
+    mfaCode: z.string().min(1).optional(),
   })
   .loose();
 
@@ -28,19 +32,18 @@ export type RemoteCodexEnv = z.infer<typeof remoteCodexEnvSchema>;
 
 export interface UiHost {
   id: number;
+  name: string;
 }
 
 export interface UiProject {
-  id: number;
   hostId: number;
   name: string;
   remotePath: string;
 }
 
-const uiHostSchema = z.object({ id: z.number().int().positive() }).loose();
+const uiHostSchema = z.object({ id: z.number().int().positive(), name: z.string().min(1) }).loose();
 const uiProjectSchema = z
   .object({
-    id: z.number().int().positive(),
     hostId: z.number().int().positive(),
     name: z.string().min(1),
     remotePath: z.string().min(1),
@@ -55,12 +58,19 @@ export async function readUpgradeRemoteEnvs() {
   return z.array(remoteCodexEnvSchema).parse(JSON.parse(await readFile(upgradeEnvFile, "utf8")));
 }
 
+export async function readMfaRemoteEnv() {
+  return remoteCodexEnvSchema.parse(JSON.parse(await readFile(mfaEnvFile, "utf8")));
+}
+
 export async function readContainerCodexVersion(remote: RemoteCodexEnv) {
   return await runRemoteCodexVersion(remote);
 }
 
 export async function execRemoteSsh(remote: RemoteCodexEnv, command: string) {
-  const connection = await connectTestSsh(remote);
+  const connection = await connectTestSsh({
+    ...remote,
+    keyboardInteractiveCode: remote.mfaCode,
+  });
   try {
     return await execTestSsh(connection, command);
   } finally {
@@ -107,13 +117,15 @@ if [ -n "$pids" ]; then
 fi
 rm -f "$socket"
 rm -f "$daemon_dir"/app-server.pid "$daemon_dir"/app-server.pid.lock "$daemon_dir"/app-server.stderr.log
+rm -f "$daemon_dir"/daemon.pid "$daemon_dir"/daemon.pid.lock "$daemon_dir"/daemon.stderr.log
+rm -f "$daemon_dir"/daemon-updater.pid "$daemon_dir"/daemon-updater.pid.lock "$daemon_dir"/daemon-updater.stderr.log
+rm -f "$daemon_dir"/loaded-threads.json
 `,
   );
 }
 
 export async function startRemotePreviewServer(remote: RemoteCodexEnv) {
-  const nodeBin = remote.codexBin?.replace(/\/codex$/, "/node");
-  if (nodeBin === undefined || nodeBin === "") throw new Error("Missing managed remote Node path");
+  const previewNode = "/opt/codex-preview-runtime/bin/node";
   await execRemoteSsh(
     remote,
     `
@@ -121,10 +133,10 @@ set -eu
 if [ -f /tmp/codex-preview-server.pid ]; then
   kill "$(cat /tmp/codex-preview-server.pid)" >/dev/null 2>&1 || true
 fi
-nohup ${shellQuote(nodeBin)} /usr/local/lib/codex-preview-server.mjs >/tmp/codex-preview-server.log 2>&1 </dev/null &
+nohup ${shellQuote(previewNode)} /opt/codex-preview-runtime/preview-server.mjs >/tmp/codex-preview-server.log 2>&1 </dev/null &
 echo $! >/tmp/codex-preview-server.pid
 for i in $(seq 1 50); do
-  if ${shellQuote(nodeBin)} -e 'const s=require("net").connect(4173,"127.0.0.1",()=>{s.end();process.exit(0)});s.on("error",()=>process.exit(1))' >/dev/null 2>&1; then
+  if ${shellQuote(previewNode)} -e 'const s=require("net").connect(4173,"127.0.0.1",()=>{s.end();process.exit(0)});s.on("error",()=>process.exit(1))' >/dev/null 2>&1; then
     exit 0
   fi
   sleep 0.1
@@ -139,8 +151,10 @@ export async function addRemoteHost(
   page: Page,
   remote: RemoteCodexEnv,
   name = `docker-codex-${Date.now()}`,
+  options: { waitForConnection?: boolean } = {},
 ) {
   await openSettingsTab(page, "主机");
+  await page.getByTestId("host-create-toggle").click();
   const hostForm = page
     .getByTestId("add-host-button")
     .locator("xpath=ancestor::div[.//*[@data-testid='host-name-input']][1]");
@@ -161,8 +175,11 @@ export async function addRemoteHost(
   await hostForm.getByTestId("add-host-button").click();
   const host = uiHostSchema.parse(await (await hostResponsePromise).json());
   await closeSettings(page);
-  await expect(hostConnectedIndicator(page, host.id)).toBeVisible({ timeout: 120_000 });
+  if (options.waitForConnection !== false) {
+    await expect(hostConnectedIndicator(page, host.id)).toBeVisible({ timeout: 120_000 });
+  }
   if (
+    options.waitForConnection !== false &&
     remote.initialCodexVersion !== undefined &&
     remote.initialCodexVersion !== null &&
     remote.supportedCodexVersion !== undefined &&
@@ -197,18 +214,22 @@ export async function addRemoteProject(
   await page.getByTestId("add-project-button").click();
   const project = uiProjectSchema.parse(await (await projectResponsePromise).json());
   await expect(page.getByTestId(`host-button-${hostId}`)).toBeVisible();
-  await expect(page.getByTestId(`project-button-${project.id}`)).toBeVisible();
+  await expect(page.getByTestId(`project-button-${project.remotePath}`)).toBeVisible();
   return project;
 }
 
 export async function startRemoteThreadFromProjectMenu(
   page: Page,
   remote: RemoteCodexEnv,
-  projectId: number,
+  cwd: string,
 ) {
-  await page.getByTestId(`project-button-${projectId}`).click({ button: "right" });
+  const previousThreadId = new URL(page.url()).searchParams.get("threadId");
+  await page.getByTestId(`project-button-${cwd}`).click({ button: "right" });
   await page.getByRole("menuitem", { name: /新建/ }).click();
-  const threadId = await waitForSelectedThreadId(page);
+  // The route still points at the previous thread for a short time after the menu click. Waiting
+  // only for a non-empty threadId can therefore return the old running thread and make the next
+  // user action target it. A successful new-thread action must select a different thread.
+  const threadId = await waitForSelectedThreadId(page, previousThreadId);
   await expect(page.getByPlaceholder("输入后续修改要求")).toBeEnabled();
   await expect(page.getByTestId(`thread-button-${threadId}`)).toBeVisible({ timeout: 30_000 });
   if (remote.testModel !== undefined && remote.testModel !== "") {
@@ -223,10 +244,13 @@ export async function startRemoteThreadFromProjectMenu(
   return threadId;
 }
 
-export async function waitForSelectedThreadId(page: Page) {
+export async function waitForSelectedThreadId(page: Page, previousThreadId: string | null = null) {
   const handle = await page.waitForFunction(
-    () => new URLSearchParams(window.location.search).get("threadId"),
-    undefined,
+    (previous) => {
+      const threadId = new URLSearchParams(window.location.search).get("threadId");
+      return threadId !== null && threadId !== previous ? threadId : null;
+    },
+    previousThreadId,
     { timeout: 30_000 },
   );
   const threadId = await handle.jsonValue();
@@ -344,10 +368,13 @@ async function runRemoteCodexVersion(remote: RemoteCodexEnv) {
   return stdout.trim();
 }
 
-export function remoteCodexCommand(remote: RemoteCodexEnv) {
-  if (remote.codexBin !== undefined && remote.codexBin !== "") {
-    const binDirectory = remote.codexBin.replace(/\/[^/]+$/, "");
-    return `env PATH=${shellQuote(binDirectory)}:"$PATH" ${shellQuote(remote.codexBin)}`;
+export function remoteCodexCommand(
+  remote: RemoteCodexEnv,
+  bin: string | null | undefined = remote.codexBin,
+) {
+  if (bin !== undefined && bin !== null && bin !== "") {
+    const binDirectory = bin.replace(/\/[^/]+$/, "");
+    return `env PATH=${shellQuote(binDirectory)}:"$PATH" ${shellQuote(bin)}`;
   }
   const candidates = ["$HOME/.npm-global/bin/codex", "$HOME/.local/bin/codex"];
   const candidateList = candidates.map(shellQuote).join(" ");
@@ -366,10 +393,9 @@ async function currentRouteSelection(page: Page) {
   return page.evaluate(() => {
     const params = new URLSearchParams(window.location.search);
     const hostId = Number(params.get("hostId"));
-    const projectId = Number(params.get("projectId"));
     return {
       hostId: Number.isInteger(hostId) && hostId > 0 ? hostId : null,
-      projectId: Number.isInteger(projectId) && projectId > 0 ? projectId : null,
+      cwd: params.get("cwd"),
       threadId: params.get("threadId") ?? null,
     };
   });

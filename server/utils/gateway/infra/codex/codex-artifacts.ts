@@ -1,36 +1,26 @@
 import { createHash } from "node:crypto";
-import { execFile } from "node:child_process";
 import { createReadStream, createWriteStream } from "node:fs";
-import { mkdtemp, rm, stat } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { promisify } from "node:util";
+import { mkdir, rename, rm, stat } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import type { CodexRemotePlatform } from "./codex-platform";
 import { z } from "zod";
+import { gatewayDatabasePath } from "../../storage/database";
+import { gatewayLog } from "../../logging";
 
-const execFileAsync = promisify(execFile);
-const NPM_COMMAND_TIMEOUT_MS = 10 * 60_000;
-const ARTIFACT_IDLE_TTL_MS = 30_000;
+const ARTIFACT_IDLE_TTL_MS = 24 * 60 * 60_000;
+const RELEASE_METADATA_TIMEOUT_MS = 30_000;
+const RELEASE_ASSET_TIMEOUT_MS = 10 * 60_000;
 
 export interface CodexArtifactBundle {
-  cacheArchive: {
+  releaseTarget: CodexRemotePlatform["releaseTarget"];
+  standaloneArchive: {
     localPath: string;
     fileName: string;
     size: number;
-    sha512: string;
+    sha256: string;
   };
-  nodeArchive: NodeArtifact | null;
-}
-
-interface NodeArtifact {
-  localPath: string;
-  fileName: string;
-  directoryName: string;
-  version: string;
-  sha256: string;
-  size: number;
 }
 
 interface SharedBundle {
@@ -47,11 +37,11 @@ interface PreparedBundle {
 export class CodexArtifactProvider {
   private readonly shared = new Map<string, SharedBundle>();
 
-  async acquire(version: string, platform: CodexRemotePlatform, options: { includeNode: boolean }) {
-    const key = `${version}:${platform.packageName}:${options.includeNode}`;
+  async acquire(version: string, platform: CodexRemotePlatform) {
+    const key = `${version}:${platform.releaseTarget}`;
     let entry = this.shared.get(key);
     if (entry === undefined) {
-      const promise = prepareBundle(version, platform, options).catch((error) => {
+      const promise = prepareBundle(version, platform).catch((error) => {
         this.shared.delete(key);
         throw error;
       });
@@ -83,9 +73,9 @@ export class CodexArtifactProvider {
     entry.cleanupTimer = setTimeout(() => {
       if (entry.users !== 0 || this.shared.get(key) !== entry) return;
       this.shared.delete(key);
-      void entry.promise.then(({ directory }) =>
-        rm(directory, { recursive: true, force: true }).catch(() => undefined),
-      );
+      void entry.promise
+        .then(({ directory }) => rm(directory, { recursive: true, force: true }))
+        .catch(() => undefined);
     }, ARTIFACT_IDLE_TTL_MS);
     entry.cleanupTimer.unref();
   }
@@ -94,30 +84,45 @@ export class CodexArtifactProvider {
 async function prepareBundle(
   version: string,
   platform: CodexRemotePlatform,
-  options: { includeNode: boolean },
 ): Promise<PreparedBundle> {
-  const directory = await mkdtemp(join(tmpdir(), "codex-gateway-artifacts-"));
-  const cacheDirectory = join(directory, "npm-cache");
-  const archivePath = join(directory, "codex-npm-cache.tgz");
+  const release = await resolveStandaloneRelease(version, platform);
+  // Use the existing data volume so a Gateway restart does not download the same 150 MB again.
+  // The digest is the cache identity; verify disk contents before reusing bytes from a prior
+  // process. Idle leases keep packages for a day, rather than evicting between SSH retries.
+  const directory = join(
+    dirname(gatewayDatabasePath()),
+    "cache",
+    "codex-artifacts",
+    release.sha256,
+  );
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  const archivePath = join(directory, release.assetName);
   try {
-    const platformSpec = await readOfficialPlatformSpec(version, platform.packageName);
-    // Platform builds are npm aliases of @openai/codex, not standalone package tarballs.
-    // Shipping npm's own cache preserves that alias so the remote npm install owns the layout.
-    await npm(["cache", "add", "--cache", cacheDirectory, `@openai/codex@${version}`]);
-    await npm(["cache", "add", "--cache", cacheDirectory, platformSpec]);
-    await run("tar", ["-czf", archivePath, "-C", cacheDirectory, "."]);
+    const cachedFile = await stat(archivePath).catch(() => null);
+    const cached =
+      cachedFile !== null && (await hashFile(archivePath, "sha256")) === release.sha256;
+    if (!cached) {
+      // Only publish verified downloads. A killed process may leave .part, but never a cache hit.
+      const partialPath = `${archivePath}.part`;
+      await downloadVerifiedArchive(release, partialPath);
+      await rename(partialPath, archivePath);
+    }
     const file = await stat(archivePath);
-    const nodeArchive = options.includeNode ? await prepareNodeArtifact(directory, platform) : null;
+    gatewayLog("info", "gateway-upgrade", cached ? "artifact cache hit" : "artifact downloaded", {
+      targetVersion: version,
+      releaseTarget: platform.releaseTarget,
+      bytes: file.size,
+    });
     return {
       directory,
       artifacts: {
-        cacheArchive: {
+        releaseTarget: platform.releaseTarget,
+        standaloneArchive: {
           localPath: archivePath,
-          fileName: "codex-npm-cache.tgz",
+          fileName: release.assetName,
           size: file.size,
-          sha512: await hashFile(archivePath),
+          sha256: release.sha256,
         },
-        nodeArchive,
       },
     };
   } catch (error) {
@@ -126,81 +131,112 @@ async function prepareBundle(
   }
 }
 
-async function prepareNodeArtifact(
-  directory: string,
+interface StandaloneRelease {
+  assetName: string;
+  downloadUrls: string[];
+  sha256: string;
+}
+
+interface ReleaseAsset {
+  name: string;
+  digest: string;
+  url: string;
+}
+
+const releaseAssetSchema = z
+  .object({
+    name: z.string().min(1),
+    digest: z.string().regex(/^sha256:[a-f0-9]{64}$/i),
+    browser_download_url: z.url(),
+  })
+  .transform(({ name, digest, browser_download_url }) => ({
+    name,
+    digest,
+    url: browser_download_url,
+  }));
+
+const releaseMetadataSchema = z.object({
+  assets: z.array(releaseAssetSchema),
+});
+
+async function resolveStandaloneRelease(
+  version: string,
   platform: CodexRemotePlatform,
-): Promise<NodeArtifact> {
-  const version = process.versions.node;
-  const directoryName = `node-v${version}-${platform.nodeTarget}`;
-  const fileName = `${directoryName}.tar.gz`;
-  const releaseRoot = `https://nodejs.org/dist/v${version}`;
-  const checksumsResponse = await fetch(`${releaseRoot}/SHASUMS256.txt`);
-  if (!checksumsResponse.ok) {
-    throw new Error(
-      `Failed to download official Node.js checksums: HTTP ${checksumsResponse.status}`,
-    );
-  }
-  const checksums = await checksumsResponse.text();
-  const checksumLine = checksums.split("\n").find((line) => line.trim().endsWith(`  ${fileName}`));
-  const sha256 = checksumLine?.trim().split(/\s+/, 1)[0];
-  if (sha256 === undefined || !/^[a-f0-9]{64}$/.test(sha256)) {
-    throw new Error(`Official Node.js checksums do not contain ${fileName}`);
+): Promise<StandaloneRelease> {
+  const assetName = `codex-package-${platform.releaseTarget}.tar.gz`;
+  const releasesUrl = `https://releases.openai.com/codex/releases/${version}/release.json`;
+  const githubUrl = `https://api.github.com/repos/openai/codex/releases/tags/rust-v${version}`;
+  const metadataUrls = [releasesUrl, githubUrl];
+  const assets: ReleaseAsset[] = [];
+  const failures: string[] = [];
+
+  for (const metadataUrl of metadataUrls) {
+    try {
+      assets.push(...(await readReleaseAssets(metadataUrl)));
+    } catch (error) {
+      failures.push(error instanceof Error ? error.message : String(error));
+    }
   }
 
-  const response = await fetch(`${releaseRoot}/${fileName}`);
-  if (!response.ok || response.body === null) {
-    throw new Error(`Failed to download official Node.js ${fileName}: HTTP ${response.status}`);
+  const candidates = assets.filter((asset) => asset.name === assetName);
+  if (candidates.length === 0) {
+    throw new Error(
+      [
+        `Codex ${version} does not publish ${assetName}`,
+        failures.length > 0 ? `Release metadata failures: ${failures.join("; ")}` : null,
+      ]
+        .filter(Boolean)
+        .join(" "),
+    );
   }
-  const localPath = join(directory, fileName);
-  await pipeline(Readable.from(response.body), createWriteStream(localPath));
-  const downloadedHash = await hashFile(localPath, "sha256");
-  if (downloadedHash !== sha256) {
-    throw new Error(`Official Node.js archive checksum mismatch for ${fileName}`);
-  }
+  const sha256 = candidates[0]!.digest.slice("sha256:".length).toLowerCase();
+  // releases.openai.com is preferred because the official installer uses it first. The GitHub
+  // asset remains a verification-preserving fallback for temporarily unavailable infrastructure.
   return {
-    localPath,
-    fileName,
-    directoryName,
-    version,
+    assetName,
+    downloadUrls: [...new Set(candidates.map(({ url }) => url))],
     sha256,
-    size: (await stat(localPath)).size,
   };
 }
 
-async function readOfficialPlatformSpec(version: string, packageName: string) {
-  const { stdout } = await npm([
-    "view",
-    `@openai/codex@${version}`,
-    "optionalDependencies",
-    "--json",
-  ]);
-  let metadata: unknown;
-  try {
-    metadata = JSON.parse(stdout);
-  } catch {
-    throw new Error(`npm returned invalid optional dependency metadata for Codex ${version}`);
-  }
-  const dependencies = z.record(z.string(), z.unknown()).parse(metadata);
-  const alias = dependencies[packageName];
-  if (typeof alias !== "string" || !alias.startsWith("npm:@openai/codex@")) {
-    throw new Error(`Codex ${version} does not publish the official ${packageName} package alias`);
-  }
-  return alias.slice("npm:".length);
-}
-
-function npm(args: string[]) {
-  return run("npm", args);
-}
-
-async function run(command: string, args: string[]) {
-  return await execFileAsync(command, args, {
-    encoding: "utf8",
-    maxBuffer: 1024 * 1024,
-    timeout: NPM_COMMAND_TIMEOUT_MS,
+async function readReleaseAssets(url: string) {
+  const response = await fetch(url, {
+    headers: { accept: "application/json" },
+    signal: AbortSignal.timeout(RELEASE_METADATA_TIMEOUT_MS),
   });
+  if (!response.ok) {
+    throw new Error(`${url} returned HTTP ${response.status}`);
+  }
+  return releaseMetadataSchema.parse(await response.json()).assets;
 }
 
-async function hashFile(path: string, algorithm = "sha512") {
+async function downloadVerifiedArchive(release: StandaloneRelease, outputPath: string) {
+  const failures: string[] = [];
+  for (const url of release.downloadUrls) {
+    try {
+      const response = await fetch(url, {
+        signal: AbortSignal.timeout(RELEASE_ASSET_TIMEOUT_MS),
+      });
+      if (!response.ok || response.body === null) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+      await pipeline(Readable.from(response.body), createWriteStream(outputPath));
+      const actual = await hashFile(outputPath, "sha256");
+      if (actual !== release.sha256) {
+        throw new Error(`SHA-256 mismatch: expected ${release.sha256}, received ${actual}`);
+      }
+      return;
+    } catch (error) {
+      failures.push(`${url}: ${error instanceof Error ? error.message : String(error)}`);
+      await rm(outputPath, { force: true });
+    }
+  }
+  throw new Error(
+    `Failed to download official Codex archive ${release.assetName}: ${failures.join("; ")}`,
+  );
+}
+
+async function hashFile(path: string, algorithm: "sha256" | "sha512") {
   const hash = createHash(algorithm);
   await new Promise<void>((resolve, reject) => {
     const stream = createReadStream(path);

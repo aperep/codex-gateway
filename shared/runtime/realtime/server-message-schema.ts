@@ -1,7 +1,16 @@
 import { z } from "zod";
+import { hostUpgradeProgressSchema } from "../../host-upgrade";
 import type { RealtimeServerMessage } from "../../types";
+import { reasoningSummarySchema } from "../../reasoning-summary";
 import { threadTimelineItemTypes } from "../../thread-history/types";
-import { gatewayThreadSchema, rpcEnvelopeSchema, threadGoalSchema } from "../app-server";
+import {
+  gatewayThreadSchema,
+  threadAttachmentSchema,
+  threadGoalSchema,
+  threadTimelinePageSchema,
+  threadItemsReadResponseSchema,
+} from "../app-server";
+import { agentEventSchema } from "../../agent/events";
 import { realtimeClientMessageSchema } from "./client-message-schema";
 import {
   nonEmptyString,
@@ -58,15 +67,8 @@ const gatewayEventSchema = z
     id: nonNegativeId,
     hostId: positiveId,
     threadId: nonEmptyString,
-    method: nonEmptyString,
-    payload: rpcEnvelopeSchema,
+    event: agentEventSchema,
     createdAt: nonEmptyString,
-  })
-  .strict();
-const turnsPageStateSchema = z
-  .object({
-    nextCursor: z.string().nullable(),
-    backwardsCursor: z.string().nullable(),
   })
   .strict();
 const tmuxPaneSnapshotSchema = z
@@ -102,6 +104,7 @@ const threadSettingsSchema = z
   .object({
     model: nullableString,
     effort: nullableString,
+    summary: reasoningSummarySchema.nullable().optional(),
     approvalPolicy: z.enum(["untrusted", "on-request", "never"]).nullable().optional(),
     collaborationMode: z
       .object({
@@ -146,7 +149,6 @@ const tokenUsageSchema = z
   .strict();
 const projectSchema = z
   .object({
-    id: positiveId,
     hostId: positiveId,
     name: z.string(),
     remotePath: z.string(),
@@ -166,16 +168,14 @@ const threadOpenResultFields = {
     .optional(),
   threadSettings: threadSettingsSchema.nullable().optional(),
   tokenUsage: tokenUsageSchema.nullable().optional(),
-  projectId: positiveId.nullable().optional(),
   project: projectSchema.nullable().optional(),
-  turnsPage: turnsPageStateSchema,
+  oldestTimelineCursor: z.string().nullable(),
   recentEvents: z.array(gatewayEventSchema),
 };
 const terminalSessionSchema = z
   .object({
     sessionId: nonEmptyString,
     hostId: positiveId,
-    projectId: positiveId.nullable(),
     threadId: z.string().nullable(),
     cwd: z.string().nullable(),
     title: z.string(),
@@ -192,7 +192,7 @@ const browserSessionSchema = z
   .object({
     sessionId: nonEmptyString,
     hostId: positiveId,
-    projectId: positiveId.nullable().optional(),
+    cwd: z.string().nullable().optional(),
     threadId: z.string().nullable().optional(),
     panelId: nonEmptyString,
     targetUrl: nonEmptyString,
@@ -207,7 +207,6 @@ const notificationTargetSchema = z.discriminatedUnion("kind", [
     .object({
       kind: z.literal("thread"),
       hostId: positiveId,
-      projectId: positiveId.nullable(),
       threadId: nonEmptyString,
     })
     .strict(),
@@ -216,7 +215,6 @@ const notificationTargetSchema = z.discriminatedUnion("kind", [
       kind: z.literal("tmuxMonitor"),
       hostId: positiveId,
       monitorId: positiveId,
-      projectId: positiveId.nullable(),
       threadId: z.string().nullable(),
     })
     .strict(),
@@ -394,13 +392,28 @@ const projectFileSearchResultSchema = z
     ),
   })
   .strict();
-
+const agentProjectDefaultsSchema = z
+  .object({
+    provider: z.literal("codex"),
+    model: z.string().nullable(),
+    effort: z.string().nullable(),
+  })
+  .strict();
 // Top-level Gateway messages are closed protocol objects. Nested app-server thread/envelope
 // records intentionally remain extensible because upstream adds fields between releases; their
 // required identity and lifecycle fields are still parsed by the shared app-server schemas.
 export const realtimeServerMessageSchema: z.ZodType<RealtimeServerMessage> = z.discriminatedUnion(
   "type",
   [
+    z
+      .object({
+        type: z.literal("notification.webPush.configured"),
+        ...requestIdField,
+        publicKey: nonEmptyString,
+      })
+      .strict(),
+    z.object({ type: z.literal("notification.webPush.subscribed"), ...requestIdField }).strict(),
+    z.object({ type: z.literal("notification.webPush.unsubscribed"), ...requestIdField }).strict(),
     z.object({ type: z.literal("ready"), connectionId: nonEmptyString }).strict(),
     z
       .object({ type: z.literal("notification.published"), notification: notificationSchema })
@@ -431,11 +444,26 @@ export const realtimeServerMessageSchema: z.ZodType<RealtimeServerMessage> = z.d
               "connecting",
               "connected",
               "failed",
+              "mfaRequired",
             ]),
             message: z.string(),
             createdAt: z.string().optional(),
+            upgradeProgress: hostUpgradeProgressSchema.nullable().optional(),
           })
           .strict(),
+      })
+      .strict(),
+    z
+      .object({ type: z.literal("host.daemon.restarted"), ...requestIdField, hostId: positiveId })
+      .strict(),
+    z
+      .object({
+        type: z.literal("host.upgrades.snapshot"),
+        ...requestIdField,
+        createdAt: z.string(),
+        upgrades: z.array(
+          z.object({ hostId: positiveId, progress: hostUpgradeProgressSchema.nullable() }).strict(),
+        ),
       })
       .strict(),
     z
@@ -467,10 +495,19 @@ export const realtimeServerMessageSchema: z.ZodType<RealtimeServerMessage> = z.d
       .strict(),
     z
       .object({
+        type: z.literal("project.defaults.snapshot"),
+        ...requestIdField,
+        hostId: positiveId,
+        cwd: nonEmptyString,
+        defaults: agentProjectDefaultsSchema,
+      })
+      .strict(),
+    z
+      .object({
         type: z.literal("file.search.results"),
         ...requestIdField,
         hostId: positiveId,
-        projectId: positiveId,
+        cwd: nonEmptyString,
         result: projectFileSearchResultSchema,
       })
       .strict(),
@@ -479,7 +516,7 @@ export const realtimeServerMessageSchema: z.ZodType<RealtimeServerMessage> = z.d
         type: z.literal("file.watch.ready"),
         ...requestIdField,
         ...threadScopeFields,
-        projectId: positiveId,
+        cwd: nonEmptyString,
         rootPath: nonEmptyString,
         paths: z.array(nonEmptyString).min(1),
       })
@@ -488,7 +525,7 @@ export const realtimeServerMessageSchema: z.ZodType<RealtimeServerMessage> = z.d
       .object({
         type: z.literal("file.watch.changed"),
         ...threadScopeFields,
-        projectId: positiveId,
+        cwd: nonEmptyString,
         rootPath: nonEmptyString,
         paths: z.array(nonEmptyString),
       })
@@ -497,7 +534,7 @@ export const realtimeServerMessageSchema: z.ZodType<RealtimeServerMessage> = z.d
       .object({
         type: z.literal("file.watch.closed"),
         ...threadScopeFields,
-        projectId: positiveId,
+        cwd: nonEmptyString,
       })
       .strict(),
     z
@@ -505,7 +542,7 @@ export const realtimeServerMessageSchema: z.ZodType<RealtimeServerMessage> = z.d
         type: z.literal("file.git.comparison"),
         ...requestIdField,
         hostId: positiveId,
-        projectId: positiveId,
+        cwd: nonEmptyString,
         path: nonEmptyString,
         comparison: remoteGitComparisonSchema,
       })
@@ -515,7 +552,7 @@ export const realtimeServerMessageSchema: z.ZodType<RealtimeServerMessage> = z.d
         type: z.literal("file.git.workspace.snapshot"),
         ...requestIdField,
         hostId: positiveId,
-        projectId: positiveId,
+        cwd: nonEmptyString,
         rootPath: nonEmptyString,
         snapshot: remoteGitWorkspaceSnapshotSchema,
       })
@@ -556,22 +593,53 @@ export const realtimeServerMessageSchema: z.ZodType<RealtimeServerMessage> = z.d
       .strict(),
     z
       .object({
-        type: z.literal("thread.turns.page"),
+        type: z.literal("thread.timeline.page"),
         ...requestIdField,
         ...threadScopeFields,
-        history: threadHistorySchema,
-        turnsPage: turnsPageStateSchema,
+        data: threadTimelinePageSchema.shape.data,
+        nextCursor: z.string().nullable(),
+        activeRealtimeSessionAtPageStart: z.string().nullable(),
       })
       .strict(),
     z
       .object({
-        type: z.literal("thread.items.page"),
+        type: z.literal("thread.items.result"),
         ...requestIdField,
         ...threadScopeFields,
-        turnId: nonEmptyString,
-        items: z.array(projectedHistoryItemSchema),
+        data: threadItemsReadResponseSchema.shape.data,
+      })
+      .strict(),
+    z
+      .object({
+        type: z.literal("thread.attachments.page"),
+        ...requestIdField,
+        ...threadScopeFields,
+        data: z.array(threadAttachmentSchema),
         nextCursor: z.string().nullable(),
-        backwardsCursor: z.string().nullable(),
+      })
+      .strict(),
+    z
+      .object({
+        type: z.literal("thread.attachment.added"),
+        ...requestIdField,
+        ...threadScopeFields,
+        outcome: z.enum(["created", "existing"]),
+        attachment: threadAttachmentSchema,
+      })
+      .strict(),
+    z
+      .object({
+        type: z.literal("thread.attachment.removed"),
+        ...requestIdField,
+        ...threadScopeFields,
+      })
+      .strict(),
+    z
+      .object({
+        type: z.literal("thread.settings.snapshot"),
+        ...requestIdField,
+        ...threadScopeFields,
+        threadSettings: threadSettingsSchema,
       })
       .strict(),
     z
@@ -758,6 +826,22 @@ export const realtimeServerMessageSchema: z.ZodType<RealtimeServerMessage> = z.d
             occurredAt: nonEmptyString,
           })
           .strict(),
+      })
+      .strict(),
+    z
+      .object({
+        type: z.literal("host.mfa.request"),
+        hostId: positiveId,
+        name: z.string(),
+        instructions: z.string(),
+        prompts: z.array(
+          z
+            .object({
+              prompt: z.string(),
+              echo: z.boolean().optional(),
+            })
+            .strict(),
+        ),
       })
       .strict(),
     z

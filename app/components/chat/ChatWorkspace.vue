@@ -14,11 +14,9 @@ withDefaults(
   },
 );
 
-const { selectedHostId, selectedProjectId, selectedThreadId } = storeToRefs(
-  useGatewayNavigationStore(),
-);
+const { selectedHostId, selectedCwd, selectedThreadId } = storeToRefs(useGatewayNavigationStore());
 const scopeKey = computed(() =>
-  workspaceLayoutScopeKey(selectedHostId.value, selectedProjectId.value, selectedThreadId.value),
+  workspaceLayoutScopeKey(selectedHostId.value, selectedCwd.value, selectedThreadId.value),
 );
 </script>
 

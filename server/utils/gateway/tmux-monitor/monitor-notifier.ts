@@ -30,7 +30,6 @@ export class TmuxMonitorNotifier {
           kind: "tmuxMonitor",
           hostId: monitor.hostId,
           monitorId: monitor.id,
-          projectId: monitor.projectId,
           threadId: monitor.threadId,
         },
       });

@@ -1,13 +1,19 @@
 # Zbox variant
 
-This branch preserves the Gateway source changes used by the Zbox deployment.
-It starts from upstream `f1a5d8beaa64afa322b060b3eb062eabafb8502f`.
+`zbox` is the deployment branch of this fork; `main` follows the original project.
+The current upstream base is `5a27c7b8b6f12428a47164bfd2a09805b56c1cfd`
+and targets Codex 0.163.0.
+
+The remaining source differences are:
 
 - Default the UI to English.
 - Open PDFs fit-to-width with zoom controls.
-- Accept additive top-level Codex thread fields.
-- Resolve Linux control-socket symlinks before listener checks.
-- Collect host metrics only while at least one browser subscribes.
+- Collect host metrics only while browsers subscribe, retaining the bounded history.
+  See [upstream draft PR #153](https://github.com/yunhaoli24/codex-gateway/pull/153).
+
+Upstream now owns daemon socket handling and explicitly models the supported
+Codex thread fields. The earlier socket and loose-schema workarounds are removed.
+The tag `zbox-pre-upgrade-20261021` preserves the previously deployed source.
 
 Deployment credentials, databases, host settings, and SSH keys are excluded.
 The deployment-specific reasoning-effort cap remains in the deployment build.

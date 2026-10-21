@@ -1,0 +1,166 @@
+import { HostMfaEventBus } from "./host-mfa-events";
+import type { HostRecord } from "~~/shared/types";
+import { hostAuthCapabilityStore } from "./host-auth-capability-store";
+
+interface MfaPendingRequest {
+  userId: number;
+  hostId: number;
+  name: string;
+  instructions: string;
+  prompts: Array<{ prompt: string; echo?: boolean }>;
+  resolve: (answers: string[]) => void;
+  reject: (error: Error) => void;
+  timer: ReturnType<typeof setTimeout>;
+}
+
+export const HOST_MFA_TIMEOUT_MS = 120_000;
+
+export class HostMfaManager {
+  readonly events = new HostMfaEventBus();
+  private pending = new Map<string, MfaPendingRequest>();
+  /** Tracks which hosts are currently awaiting MFA so the SSH connection can signal "mfaRequired" */
+  private awaitedHosts = new Set<string>();
+  private detectedHosts = new Set<string>();
+  private connectionPermits = new Set<string>();
+
+  isMfaHost(userId: number, hostId: number): boolean {
+    return this.detectedHosts.has(`${userId}:${hostId}`);
+  }
+
+  canStartConnection(userId: number, hostId: number): boolean {
+    const key = `${userId}:${hostId}`;
+    return !this.detectedHosts.has(key) || this.connectionPermits.has(key);
+  }
+
+  permitConnection(userId: number, hostId: number) {
+    this.connectionPermits.add(`${userId}:${hostId}`);
+  }
+
+  revokeConnectionPermit(userId: number, hostId: number) {
+    this.connectionPermits.delete(`${userId}:${hostId}`);
+  }
+
+  restoreHost(userId: number, host: HostRecord) {
+    const key = `${userId}:${host.id}`;
+    if (hostAuthCapabilityStore.requiresKeyboardInteractive(userId, host)) {
+      this.detectedHosts.add(key);
+      return true;
+    }
+    this.detectedHosts.delete(key);
+    return false;
+  }
+
+  pruneHosts(userId: number, activeHostIds: ReadonlySet<number>) {
+    hostAuthCapabilityStore.pruneHosts(userId, activeHostIds);
+  }
+
+  isWaitingMfa(userId: number, hostId: number): boolean {
+    return this.awaitedHosts.has(`${userId}:${hostId}`);
+  }
+
+  pendingRequestsForUser(userId: number): HostMfaEvent[] {
+    return Array.from(this.pending.values()).flatMap((request) =>
+      request.userId === userId
+        ? [
+            {
+              type: "request" as const,
+              hostId: request.hostId,
+              name: request.name,
+              instructions: request.instructions,
+              prompts: request.prompts,
+            },
+          ]
+        : [],
+    );
+  }
+
+  /**
+   * Called when an SSH connection receives a keyboard-interactive prompt.
+   * Stores the pending request and emits a realtime event to the frontend.
+   * Returns a promise that resolves with the user's answers (MFA codes).
+   */
+  requestMfa(
+    userId: number,
+    host: HostRecord,
+    instructions: string,
+    prompts: Array<{ prompt: string; echo?: boolean }>,
+  ): Promise<string[]> {
+    return new Promise((resolve, reject) => {
+      const hostId = host.id;
+      const key = `${userId}:${hostId}`;
+      this.detectedHosts.add(key);
+      hostAuthCapabilityStore.markKeyboardInteractive(userId, host);
+      // Cancel any previous pending MFA for this host
+      const existing = this.pending.get(key);
+      if (existing !== undefined) {
+        clearTimeout(existing.timer);
+        existing.reject(new Error("MFA request superseded by a new authentication prompt"));
+      }
+
+      this.awaitedHosts.add(key);
+
+      const timer = setTimeout(() => {
+        this.pending.delete(key);
+        this.awaitedHosts.delete(key);
+        reject(new Error("MFA request timed out"));
+      }, HOST_MFA_TIMEOUT_MS);
+
+      this.pending.set(key, {
+        userId,
+        hostId,
+        name: host.name,
+        instructions,
+        prompts,
+        resolve,
+        reject,
+        timer,
+      });
+      this.events.publish(userId, {
+        type: "request",
+        hostId,
+        name: host.name,
+        instructions,
+        prompts,
+      });
+    });
+  }
+
+  /**
+   * Called by the realtime handler when the user submits their MFA code.
+   */
+  submitMfa(userId: number, hostId: number, code: string) {
+    const key = `${userId}:${hostId}`;
+    const pending = this.pending.get(key);
+    if (pending === undefined) {
+      throw new Error(`No pending MFA request for host ${hostId}`);
+    }
+    clearTimeout(pending.timer);
+    this.pending.delete(key);
+    this.awaitedHosts.delete(key);
+    // Provide the code as the answer to the first (and typically only) prompt
+    pending.resolve([code]);
+  }
+
+  cancelMfa(userId: number, hostId: number) {
+    const key = `${userId}:${hostId}`;
+    const pending = this.pending.get(key);
+    if (pending === undefined) return;
+    clearTimeout(pending.timer);
+    this.pending.delete(key);
+    this.awaitedHosts.delete(key);
+    pending.reject(new Error("MFA request canceled"));
+  }
+
+  removeHost(userId: number, hostId: number) {
+    const key = `${userId}:${hostId}`;
+    const pending = this.pending.get(key);
+    if (pending !== undefined) {
+      clearTimeout(pending.timer);
+      pending.reject(new Error("Host connection closed before MFA completed"));
+      this.pending.delete(key);
+    }
+    this.awaitedHosts.delete(key);
+    this.detectedHosts.delete(key);
+    this.connectionPermits.delete(key);
+  }
+}

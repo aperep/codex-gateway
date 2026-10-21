@@ -5,7 +5,7 @@ import { inject, type ComputedRef, type InjectionKey, type Ref } from "vue";
 export interface WorkspaceFilesPanelContext {
   layout: Ref<"desktop" | "mobile">;
   selectedThreadId: Ref<string | null>;
-  selectedProjectId: Ref<number | null>;
+  selectedCwd: Ref<string | null>;
   selectedHostId: Ref<number | null>;
   rootPath: ComputedRef<string>;
 }

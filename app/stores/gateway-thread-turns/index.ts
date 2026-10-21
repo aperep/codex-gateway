@@ -7,7 +7,6 @@ import { createGatewayThreadTurnActions } from "./actions";
 export interface SubmittedTurnRequestState {
   kind: "start" | "steer";
   hostId: number;
-  projectId: number | null;
   threadId: string;
   cwd: string | null;
   text: string;

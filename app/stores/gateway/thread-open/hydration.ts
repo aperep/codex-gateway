@@ -1,6 +1,5 @@
 import type { ThreadOpenResult } from "~~/shared/types";
 import { normalizeTokenUsage } from "~~/shared/token-usage";
-import { recordFromUnknown } from "~~/shared/utils/records";
 import { useGatewayCatalogStore } from "@/stores/gateway-catalog";
 import { useGatewayComposerStore } from "@/stores/gateway-composer";
 import { useGatewayNavigationStore } from "@/stores/gateway-navigation";
@@ -8,20 +7,20 @@ import { useGatewayRealtimeStore } from "@/stores/gateway-realtime";
 import { useGatewayThreadActivityStore } from "@/stores/gateway-thread-activity";
 import { useGatewayThreadRuntimeStore } from "@/stores/gateway-thread-runtime";
 import { useGatewayThreadViewStore } from "@/stores/gateway-thread-view";
-import { threadIdFromParams } from "../thread-utils/identity";
 import { runtimeStatusFromThreadState } from "../thread-utils/status";
 import type { ThreadSnapshotMessage } from "./transport";
+import { retainThreadEvents } from "@/stores/gateway-thread-view/memory/events";
+import { mergeThreadTurns } from "~~/shared/thread-history/turns";
 
 export function applyOpenedThreadResult(threadId: string, result: ThreadOpenResult) {
   const gateway = useGatewayCatalogStore();
   const navigation = useGatewayNavigationStore();
   const views = useGatewayThreadViewStore();
+  const previousAppliedEventId = views.appliedEventId;
+  const hadExistingHistory = views.history !== null;
   views.currentThread = result.thread;
-  views.history = result.history;
-  views.timelineTurns = result.history.thread.turns;
-  if (result.projectId !== null && result.projectId !== undefined) {
-    navigation.selectedProjectId = result.projectId;
-  }
+  views.setHistory(result.history);
+  navigation.selectedCwd = result.thread.cwd;
   navigation.selectedThreadId = threadId;
   useGatewayRealtimeStore().rememberThreadSubscription(
     result.hostId,
@@ -32,6 +31,7 @@ export function applyOpenedThreadResult(threadId: string, result: ThreadOpenResu
   if (result.project !== null && result.project !== undefined)
     gateway.mergeProjects([result.project]);
   applyCommonThreadResult(threadId, result, result.lastEventId);
+  views.appliedEventId = hadExistingHistory ? (previousAppliedEventId ?? 0) : result.lastEventId;
   views.applyLiveEvents(result.recentEvents);
   syncRuntimeStatusFromResult(threadId, result, {
     thread: views.currentThread,
@@ -40,20 +40,52 @@ export function applyOpenedThreadResult(threadId: string, result: ThreadOpenResu
   navigation.upsertPinnedMetadataFromThread(result.thread);
 }
 
-export function applyThreadSnapshotResult(threadId: string, result: ThreadSnapshotMessage) {
+export function applyThreadSnapshotResult(
+  threadId: string,
+  result: ThreadSnapshotMessage,
+  replaceHistory = false,
+) {
   const gateway = useGatewayCatalogStore();
   const navigation = useGatewayNavigationStore();
   const views = useGatewayThreadViewStore();
+  const previousAppliedEventId = views.appliedEventId;
+  const hadExistingHistory =
+    !replaceHistory &&
+    views.history?.thread.id === threadId &&
+    views.eventEpoch === result.eventEpoch;
+  const previousCursor = views.oldestTimelineCursor;
   views.currentThread = result.thread;
-  views.history = result.history;
-  views.timelineTurns = result.history.thread.turns;
-  if (result.projectId !== null && result.projectId !== undefined) {
-    navigation.selectedProjectId = result.projectId;
-  }
+  // A same-generation activation is a recent page, not a replacement for pages the user opened.
+  // Reuse the ordinary item-id merge so expanded content and its opaque pagination cursor survive
+  // route switching. A server epoch change or explicit replay gap replaces the replica: missing
+  // events mean an old "full" disclosure is no longer proof of completeness.
+  views.setHistory(
+    hadExistingHistory
+      ? mergeThreadTurns(
+          views.history,
+          result.thread,
+          threadId,
+          result.history.thread.turns,
+          "append",
+        )
+      : result.history,
+  );
+  navigation.selectedCwd = result.thread.cwd;
   navigation.selectedThreadId = threadId;
   if (result.project !== null && result.project !== undefined)
     gateway.mergeProjects([result.project]);
   applyCommonThreadResult(threadId, result, result.lastEventId);
+  if (hadExistingHistory) views.oldestTimelineCursor = previousCursor;
+  views.appliedEventId = hadExistingHistory ? (previousAppliedEventId ?? 0) : result.lastEventId;
+  if (hadExistingHistory) {
+    // A snapshot response carries the same bounded event tail as the initial open response. Apply
+    // that tail before the next WebSocket notification arrives; otherwise switching back can paint
+    // an older Agent message first and append its missing streamed text one frame later, moving the
+    // virtual list and interrupting bottom-follow. A fresh page already received the materialized
+    // history, so replaying its historical lifecycle events would incorrectly mark completed
+    // threads as recently running.
+    views.applyLiveEvents(result.recentEvents);
+  }
   syncRuntimeStatusFromResult(threadId, result, {
     thread: views.currentThread,
     history: views.history,
@@ -66,10 +98,11 @@ export function applyStartedThreadResult(result: ThreadOpenResult) {
   const views = useGatewayThreadViewStore();
   const threadId = result.thread.id;
   views.currentThread = result.thread;
-  views.history = result.history;
-  views.timelineTurns = result.history.thread.turns;
+  views.setHistory(result.history);
+  views.appliedEventId = result.lastEventId;
   navigation.selectedThreadId = threadId;
   applyCommonThreadResult(threadId, result, result.lastEventId);
+  navigation.selectedCwd = result.thread.cwd;
   return threadId;
 }
 
@@ -86,9 +119,8 @@ function applyCommonThreadResult(
   const hostId = result.hostId ?? navigation.selectedHostId;
   if (hostId === null) return;
   useGatewayThreadActivityStore().upsertGatewayThread(result.thread, gateway.projects);
-  views.events = result.recentEvents;
-  views.olderTurnsCursor = result.turnsPage.nextCursor;
-  views.newerTurnsCursor = result.turnsPage.backwardsCursor;
+  views.events = retainThreadEvents(result.recentEvents);
+  views.oldestTimelineCursor = result.oldestTimelineCursor;
   views.lastEventId = explicitLastEventId ?? result.recentEvents.at(-1)?.id ?? 0;
   views.eventEpoch = result.eventEpoch;
   // A metadata-only thread/read does not expose persisted model/effort. Null means unknown, not
@@ -122,15 +154,11 @@ function syncRuntimeStatusFromResult(
 function syncTokenUsageFromRecentEvents(events: ThreadOpenResult["recentEvents"]) {
   const runtime = useGatewayThreadRuntimeStore();
   for (const event of events) {
-    if (event.method !== "thread/tokenUsage/updated") continue;
-    const params = recordFromUnknown(event.payload)?.params;
-    if (params === undefined) continue;
-    const paramsRecord = recordFromUnknown(params);
-    if (paramsRecord === null) continue;
-    const threadId = threadIdFromParams(paramsRecord);
-    const tokenUsage = normalizeTokenUsage(paramsRecord.tokenUsage);
-    if (threadId !== null && event.hostId !== null && tokenUsage !== null) {
-      runtime.setThreadTokenUsage(event.hostId, String(threadId), tokenUsage);
+    const canonical = event.event;
+    if (canonical.type !== "thread.usage.updated") continue;
+    const tokenUsage = normalizeTokenUsage(canonical.tokenUsage);
+    if (tokenUsage !== null && event.hostId !== null) {
+      runtime.setThreadTokenUsage(event.hostId, event.threadId, tokenUsage);
     }
   }
 }

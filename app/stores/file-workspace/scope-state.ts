@@ -15,16 +15,10 @@ export function createFileWorkspaceScopeState(options: {
     return scopes.value[fileWorkspaceScopeKey(hostId, threadId)] ?? null;
   }
 
-  function setScopeRoot(input: {
-    hostId: number;
-    projectId: number | null;
-    threadId: string;
-    rootPath: string;
-  }) {
+  function setScopeRoot(input: { hostId: number; threadId: string; rootPath: string }) {
     const key = fileWorkspaceScopeKey(input.hostId, input.threadId);
     const existing = scopes.value[key];
     if (existing) {
-      existing.projectId = input.projectId;
       if (existing.rootPath !== input.rootPath) {
         existing.rootPath = input.rootPath;
         existing.expandedPaths = [input.rootPath];

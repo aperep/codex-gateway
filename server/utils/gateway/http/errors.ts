@@ -4,10 +4,11 @@ import { normalizeNotificationSettings } from "~~/shared/config";
 import {
   isStaleThreadCursorErrorLike,
   STALE_THREAD_CURSOR_ERROR_CODE,
+  isAppServerShuttingDownError,
+  APP_SERVER_SHUTTING_DOWN_ERROR_CODE,
 } from "~~/shared/gateway-errors";
 import { userStore } from "../auth/users";
 import { hostRuntimeSupervisor } from "../runtime/host-runtime-supervisor";
-import { projectStore } from "../state/projects";
 import {
   buildGatewayMemoryState,
   currentGatewayMemoryState,
@@ -16,6 +17,7 @@ import {
 } from "../state/memory";
 import { recordFromUnknown } from "~~/shared/utils/records";
 import { firstNonEmptyString } from "~~/shared/utils/strings";
+import { gatewayLog } from "../logging";
 
 export class CodexRpcError extends Error {
   constructor(
@@ -34,7 +36,7 @@ export function logGatewayApiError(
   details: Record<string, unknown>,
   error: unknown,
 ) {
-  console.error(`[gateway] ${scope} failed`, {
+  gatewayLog("error", "gateway", `${scope} failed`, {
     ...details,
     error: serializeError(error),
   });
@@ -99,12 +101,11 @@ export function saveCurrentUserConfig(event: H3Event) {
 export function runtimeConfigFromMemory(): GatewayConfig {
   const state = currentGatewayMemoryState();
   return {
-    version: 1,
+    version: 2,
     hosts: state.hosts.map((host) => ({
       ...host,
       hasPassword: Boolean(host.password),
     })),
-    projects: projectStore.listConfigured(),
     pinnedThreads: state.pinnedThreads,
     notifications: normalizeNotificationSettings(state.notifications),
   };
@@ -168,6 +169,7 @@ function serializeError(error: unknown): Record<string, unknown> {
 }
 
 function statusCodeFromError(error: unknown) {
+  if (isAppServerShuttingDownError(error)) return 503;
   if (isStaleThreadCursorErrorLike(error)) {
     return 409;
   }
@@ -179,7 +181,8 @@ function statusCodeFromError(error: unknown) {
   return 502;
 }
 
-function publicErrorCode(error: unknown) {
+export function publicErrorCode(error: unknown) {
+  if (isAppServerShuttingDownError(error)) return APP_SERVER_SHUTTING_DOWN_ERROR_CODE;
   const code = recordFromUnknown(error)?.code;
   if (typeof code === "string") {
     return code;
@@ -190,7 +193,10 @@ function publicErrorCode(error: unknown) {
   return undefined;
 }
 
-function publicErrorMessage(error: unknown) {
+export function publicErrorMessage(error: unknown) {
+  if (isAppServerShuttingDownError(error)) {
+    return "Codex app-server is shutting down for an update or restart. Wait for it to reconnect before trying again.";
+  }
   if (error instanceof CodexRpcError) {
     return firstNonEmptyString([error.message]) ?? `Codex RPC ${error.rpcMethod} failed`;
   }

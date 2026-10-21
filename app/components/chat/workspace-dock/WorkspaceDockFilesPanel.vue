@@ -20,7 +20,6 @@ onBeforeUnmount(() => activeSubscription.dispose());
       v-if="context.selectedHostId.value && context.selectedThreadId.value"
       :layout="context.layout.value"
       :host-id="context.selectedHostId.value"
-      :project-id="context.selectedProjectId.value"
       :thread-id="context.selectedThreadId.value"
       :root-path="context.rootPath.value"
       :active="active"

@@ -1,17 +1,22 @@
 import { posix } from "node:path";
 import type { SFTPWrapper, Stats } from "ssh2";
-import type { FileReference, HostRecord, ProjectRecord } from "~~/shared/types";
+import type { FileReference, HostRecord } from "~~/shared/types";
+import { threadMetadataStore } from "../state/thread-metadata";
 import { sshConnections } from "../infra/host-services";
 
 export const MAX_FILE_REFERENCES = 10;
 
 export async function validateProjectFileReferences(
   host: HostRecord,
-  project: ProjectRecord,
+  threadId: string,
   references: FileReference[],
 ): Promise<FileReference[]> {
-  if (project.hostId !== host.id) {
-    throw new Error(`Project ${project.id} does not belong to host ${host.id}`);
+  // Most turns have no file references and need no SFTP work. For references, use the opened
+  // thread's authoritative cwd, never a browser project hint or an extra app-server history read.
+  if (references.length === 0) return [];
+  const cwd = threadMetadataStore.get(host.id, threadId)?.cwd;
+  if (cwd === null || cwd === undefined || cwd.trim() === "") {
+    throw new Error("Thread working directory is unavailable");
   }
   if (references.length > MAX_FILE_REFERENCES) {
     throw new Error(`A turn can reference at most ${MAX_FILE_REFERENCES} project files`);
@@ -26,7 +31,7 @@ export async function validateProjectFileReferences(
     ).values(),
   ];
   const sftp = await sshConnections.sftp(host);
-  const root = await realpath(sftp, project.remotePath);
+  const root = await realpath(sftp, cwd);
 
   await Promise.all(
     normalized.map(async (reference) => {

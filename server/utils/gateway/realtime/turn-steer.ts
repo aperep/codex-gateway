@@ -3,7 +3,6 @@ import { requireRecord } from "../http/validation/common";
 import { turnSteerSchema } from "../http/validation/threads";
 import { threadBroker } from "../runtime/broker";
 import { hostStore } from "../state/hosts";
-import { projectStore } from "../state/projects";
 import {
   fileReferencesAdditionalContext,
   validateProjectFileReferences,
@@ -14,13 +13,13 @@ export type RealtimeTurnSteerMessage = Extract<RealtimeClientMessage, { type: "t
 export async function steerTurnFromRealtime(message: RealtimeTurnSteerMessage) {
   const input = turnSteerSchema.parse(message);
   const host = requireRecord(hostStore.getWithSecret(input.hostId), "Host not found");
-  const project = requireRecord(projectStore.get(input.projectId), "Project not found");
-  const references = await validateProjectFileReferences(host, project, input.references);
+  const references = await validateProjectFileReferences(host, input.threadId, input.references);
   return threadBroker.steerTurn(host, input.threadId, {
     text: input.text,
     expectedTurnId: input.expectedTurnId,
     clientUserMessageId: input.clientUserMessageId,
     images: input.images,
+    files: input.files,
     additionalContext: fileReferencesAdditionalContext(references),
   });
 }

@@ -34,7 +34,7 @@ export interface ProjectFileSearchResult {
 export interface FilePreviewDocument {
   key: string;
   hostId: number;
-  projectId: number | null;
+  cwd: string | null;
   threadId: string;
   path: string;
   title: string;

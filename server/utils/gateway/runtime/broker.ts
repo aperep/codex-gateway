@@ -1,5 +1,10 @@
-import type { HostRecord, ThreadGoalStatus, ThreadSettingsState } from "~~/shared/types";
-import { INITIAL_TURN_PAGE_LIMIT } from "~~/shared/config";
+import type {
+  AgentProviderId,
+  HostRecord,
+  ThreadGoalStatus,
+  ThreadSettingsState,
+} from "~~/shared/types";
+import { INITIAL_TIMELINE_PAGE_LIMIT } from "~~/shared/config";
 import type { ServerRequestResponseInput, TurnStartInput, TurnSteerInput } from "./types";
 import { ControllerRegistry, type ThreadSubscriptionLease } from "./controller-registry";
 import { ThreadOpenService } from "./thread-open-service";
@@ -10,6 +15,8 @@ import { ThreadCatalogService } from "./thread-catalog";
 import { ThreadHistoryReader } from "./thread-history-reader";
 import { McpRuntimeService } from "./mcp-runtime";
 import { AppServerFileService } from "./app-server-files";
+import { providerAdapterFor } from "../agent/provider-registry";
+import { ThreadAttachmentService } from "./thread-attachments";
 
 class ThreadBroker {
   private readonly registry = new ControllerRegistry();
@@ -21,19 +28,23 @@ class ThreadBroker {
   private readonly catalog = new ThreadCatalogService(this.registry);
   private readonly mcp = new McpRuntimeService(this.registry);
   private readonly files = new AppServerFileService(this.registry);
+  private readonly attachments = new ThreadAttachmentService(this.registry);
 
   async openThread(
     host: HostRecord,
     threadId: string,
-    projectId: number | null,
-    limit = INITIAL_TURN_PAGE_LIMIT,
+    limit = INITIAL_TIMELINE_PAGE_LIMIT,
     controller?: Awaited<ThreadSubscriptionLease["ready"]>,
   ) {
-    return this.openService.openThread(host, threadId, projectId, limit, controller);
+    return this.openService.openThread(host, threadId, limit, controller);
   }
 
-  async startThread(host: HostRecord, params: Record<string, unknown>, projectId: number | null) {
-    const client = await this.registry.getHostClient(host);
+  async startThread(
+    host: HostRecord,
+    params: Record<string, unknown>,
+    providerId: AgentProviderId = "codex",
+  ) {
+    const client = await this.registry.getHostClient(host, providerId);
     // Paginated history is the current App Server storage model that can hydrate indexed Turn
     // pages without replaying an entire rollout JSONL. Keep this policy at the protocol boundary so
     // every Gateway-created thread uses it and browser DTOs do not need to expose storage details.
@@ -44,8 +55,8 @@ class ThreadBroker {
       // It exposes exact per-response usage metadata without changing persisted rollout history.
       experimentalRawEvents: true,
     });
-    const started = this.openService.startedThreadResult(host, projectId, result);
-    await this.registry.retainStartedThreadSubscription(host, started.threadId);
+    const started = this.openService.startedThreadResult(host, result);
+    await this.registry.retainStartedThreadSubscription(host, started.threadId, providerId);
     return started.result;
   }
 
@@ -77,13 +88,17 @@ class ThreadBroker {
     host: HostRecord,
     threadId: string,
     turnId: string,
-    input: Pick<ThreadSettingsState, "model" | "effort">,
+    input: Pick<ThreadSettingsState, "model" | "effort" | "summary">,
   ) {
     return this.settings.updateTurnSettings(host, threadId, turnId, input);
   }
 
   async resolveThreadSettings(host: HostRecord, threadId: string) {
     return this.settings.resolveThreadSettings(host, threadId);
+  }
+
+  async readThreadSettings(host: HostRecord, threadId: string) {
+    return this.settings.readThreadSettings(host, threadId);
   }
 
   async setThreadGoal(
@@ -114,33 +129,52 @@ class ThreadBroker {
     return this.catalog.listModels(host, params);
   }
 
+  async readProjectDefaults(host: HostRecord, cwd: string, providerId: AgentProviderId = "codex") {
+    const client = await this.registry.getHostClient(host, providerId);
+    return providerAdapterFor(providerId).readProjectDefaults(client, cwd);
+  }
+
   async renameThread(host: HostRecord, threadId: string, name: string) {
     return this.settings.renameThread(host, threadId, name);
   }
 
-  async listThreadTurns(
+  async listThreadTimelinePage(
     host: HostRecord,
     threadId: string,
-    params: {
-      cursor?: string | null;
-      limit?: number;
-      sortDirection?: "asc" | "desc";
-    },
+    cursor: string | null,
+    limit?: number,
   ) {
-    return this.historyReader.listThreadTurns(host, threadId, params);
+    return this.historyReader.listTimelinePage(host, threadId, cursor, limit);
   }
 
-  async listThreadItems(
+  async readThreadItems(host: HostRecord, threadId: string, turnId: string, itemIds: string[]) {
+    return this.historyReader.readItems(host, threadId, turnId, itemIds);
+  }
+
+  async addThreadAttachment(
     host: HostRecord,
-    threadId: string,
-    params: {
-      turnId: string;
-      cursor?: string | null;
-      limit?: number;
-      sortDirection?: "asc" | "desc";
+    input: {
+      threadId: string;
+      attachmentType: string;
+      identityKey: string;
+      payload: unknown;
     },
   ) {
-    return this.historyReader.listThreadItems(host, threadId, params);
+    return this.attachments.add(host, input);
+  }
+
+  async listThreadAttachments(
+    host: HostRecord,
+    input: { threadId: string; cursor?: string | null; limit?: number },
+  ) {
+    return this.attachments.list(host, input);
+  }
+
+  async removeThreadAttachment(
+    host: HostRecord,
+    input: { threadId: string; attachmentType: string; identityKey: string },
+  ) {
+    return this.attachments.remove(host, input);
   }
 
   async getHostClient(host: HostRecord) {
@@ -195,10 +229,6 @@ class ThreadBroker {
     return this.registry.retainActivationController(host, threadId);
   }
 
-  isThreadRunning(hostId: number, threadId: string) {
-    return this.openService.isThreadRunning(hostId, threadId);
-  }
-
   async restoreRetainedSubscriptions(host: HostRecord) {
     await this.registry.restoreRetainedSubscriptions(host);
   }
@@ -211,6 +241,10 @@ class ThreadBroker {
     this.registry.closeHost(hostId);
   }
 
+  disconnectHostTransport(hostId: number) {
+    this.registry.disconnectHostTransport(hostId);
+  }
+
   status() {
     return this.registry.status();
   }
@@ -218,10 +252,9 @@ class ThreadBroker {
   async refreshThreadState(
     host: HostRecord,
     threadId: string,
-    projectId: number | null,
-    limit = INITIAL_TURN_PAGE_LIMIT,
+    limit = INITIAL_TIMELINE_PAGE_LIMIT,
   ) {
-    return this.openService.refreshThreadState(host, threadId, projectId, limit);
+    return this.openService.refreshThreadState(host, threadId, limit);
   }
 
   async refreshThreadRuntimeStatus(host: HostRecord, threadId: string) {

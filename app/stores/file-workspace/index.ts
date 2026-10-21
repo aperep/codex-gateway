@@ -155,10 +155,10 @@ export const useGatewayFileWorkspaceStore = defineStore("gateway-file-workspace"
     if (!scope) {
       return;
     }
-    if (scope.projectId !== null) {
+    if (scope.rootPath !== "") {
       gitWorkspaces.invalidate({
         hostId: scope.hostId,
-        projectId: scope.projectId,
+        cwd: scope.rootPath,
         rootPath: scope.rootPath,
       });
     }
@@ -195,10 +195,10 @@ export const useGatewayFileWorkspaceStore = defineStore("gateway-file-workspace"
 
   function invalidateGitWorkspace(hostId: number, threadId: string) {
     const scope = scopeFor(hostId, threadId);
-    if (scope?.projectId === null || scope?.projectId === undefined) return;
+    if (scope === null || scope.rootPath === "") return;
     gitWorkspaces.invalidate({
       hostId: scope.hostId,
-      projectId: scope.projectId,
+      cwd: scope.rootPath,
       rootPath: scope.rootPath,
     });
   }

@@ -15,10 +15,9 @@ RUN apt-get update \
 # Keep precompiled browser packages in the dependency layer. Their Office, Markdown, UI, and AI
 # dependency graphs change far less often than the Nuxt app, so normal edits reuse this layer.
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml turbo.json ./
-COPY patches ./patches
 COPY packages ./packages
 RUN --mount=type=cache,id=pnpm-store,target=/pnpm/store \
-    pnpm install --frozen-lockfile
+    pnpm install --frozen-lockfile --reporter=silent
 
 FROM deps AS build
 COPY i18n ./i18n
@@ -27,10 +26,11 @@ COPY public ./public
 COPY scripts ./scripts
 COPY shared ./shared
 COPY server ./server
+COPY service-worker ./service-worker
 COPY app ./app
-# Nuxt 4.5.1 buildCache can restore the Vue bundle without wiring its renderer virtual modules
-# (nuxt/nuxt#35894). Keep dependency layers cached, but always produce a complete app bundle.
-RUN pnpm exec nuxt build
+# Reuse precompiled packages from the deps layer. Nuxt 4.6 includes the former renderer-cache
+# fixes; application sources stay in this separate layer so an edit rebuilds the app bundle.
+RUN pnpm exec nuxt build --logLevel silent
 
 FROM node:${NODE_VERSION} AS runner
 ENV NODE_ENV=production

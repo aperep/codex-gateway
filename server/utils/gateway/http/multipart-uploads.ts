@@ -13,7 +13,6 @@ export interface ParsedUploadFile {
   originalName: string;
   mimeType: string | null;
   localPath: string;
-  safeName: string;
   size: number;
 }
 
@@ -35,7 +34,9 @@ export function streamMultipartUploads(event: H3Event, tempDir: string) {
     const files: ParsedUploadFile[] = [];
     const writes: Promise<void>[] = [];
     let limitError: Error | null = null;
-    let writeError: unknown = null;
+    // settle() treats only undefined as success. Using null here makes every successful
+    // non-image upload reject before SFTP starts, because limitError ?? writeError is null.
+    let writeError: Error | undefined;
     let settled = false;
 
     const settle = (error?: unknown) => {
@@ -62,13 +63,17 @@ export function streamMultipartUploads(event: H3Event, tempDir: string) {
         return;
       }
       const originalName = basename(filename);
+      if (originalName === "." || originalName === ".." || originalName.includes("\0")) {
+        limitError = createError({ statusCode: 400, statusMessage: "Invalid attachment filename" });
+        stream.resume();
+        return;
+      }
       const safeName = `${randomUUID()}${extname(originalName)}`;
       const localPath = join(tempDir, safeName);
       const file: ParsedUploadFile = {
         originalName,
         mimeType: mimeType === "" ? null : mimeType,
         localPath,
-        safeName,
         size: 0,
       };
       stream.on("data", (chunk: Buffer) => {
@@ -81,7 +86,7 @@ export function streamMultipartUploads(event: H3Event, tempDir: string) {
       });
       writes.push(
         writeUpload(stream, localPath).catch((error) => {
-          writeError ??= error;
+          writeError ??= ensureError(error);
         }),
       );
       files.push(file);

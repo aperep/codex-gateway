@@ -18,7 +18,7 @@ import {
 } from "@codex-gateway/ui/context-menu";
 import { useLongPressContextMenu } from "@/composables/interactions/useLongPressContextMenu";
 import { useGatewayCatalogStore } from "@/stores/gateway-catalog";
-import { projectById } from "@/stores/gateway-catalog/selectors";
+import { projectForDirectory } from "@/stores/gateway-catalog/selectors";
 import { useGatewayNavigationStore } from "@/stores/gateway-navigation";
 import { useGatewayThreadViewStore } from "@/stores/gateway-thread-view";
 import { titleForThread } from "@/stores/gateway/thread-utils/identity";
@@ -29,9 +29,11 @@ const navigation = useGatewayNavigationStore();
 const threadView = useGatewayThreadViewStore();
 const { t } = useI18n();
 const { projects } = storeToRefs(catalog);
-const { selectedHostId, selectedProjectId, selectedThreadId, threads } = storeToRefs(navigation);
+const { selectedHostId, selectedCwd, selectedThreadId, threads } = storeToRefs(navigation);
 const { currentThread, loading } = storeToRefs(threadView);
-const selectedProject = computed(() => projectById(projects.value, selectedProjectId.value));
+const selectedProject = computed(() =>
+  projectForDirectory(projects.value, selectedHostId.value, selectedCwd.value),
+);
 const { longPressTriggered, longPressContextMenuHandlers } = useLongPressContextMenu();
 
 const sortedThreads = computed(() => {
@@ -63,7 +65,7 @@ function openThread(threadId: string) {
   }
   void threadView.openThread(threadId, {
     hostId: selectedHostId.value ?? undefined,
-    projectId: selectedProjectId.value,
+    cwd: selectedCwd.value,
   });
 }
 </script>

@@ -1,14 +1,15 @@
 import { z } from "zod";
+import { reasoningSummarySchema } from "../reasoning-summary";
 import type {
-  AppServerThread,
   ApprovalPolicy,
-  RpcEnvelope,
   ThreadCollaborationMode,
+  ThreadAttachment,
+  ThreadAttachmentsPage,
   ThreadGoal,
-  ThreadHistoryItem,
-  ThreadHistoryTurn,
   ThreadSettingsState,
-} from "../types";
+} from "../types/thread";
+import type { RpcEnvelope } from "../types/records";
+import type { ThreadHistoryItem, ThreadHistoryTurn } from "../thread-history/types";
 
 const rpcIdSchema = z.union([z.string(), z.number()]);
 const rpcErrorSchema = z
@@ -71,6 +72,7 @@ const appServerThreadSettingsSchema = z
   .object({
     model: z.string().min(1),
     effort: z.string().nullable().optional(),
+    summary: reasoningSummarySchema.nullable(),
     approvalPolicy: z.unknown(),
     collaborationMode: appServerCollaborationModeSchema,
   })
@@ -97,6 +99,7 @@ export function threadSettingsFromAppServer(value: unknown): ThreadSettingsState
   return {
     model: parsed.data.model,
     effort: parsed.data.effort ?? null,
+    summary: parsed.data.summary,
     approvalPolicy: approvalPolicyFromAppServer(parsed.data.approvalPolicy),
     collaborationMode: threadCollaborationModeFromAppServer(parsed.data.collaborationMode),
   };
@@ -113,15 +116,19 @@ const threadItemSchema = z
   })
   .loose();
 
+// 0.162.1 explicitly exports an open error union. Preserve unknown wire codes/details here,
+// rather than dropping an otherwise valid turn or inventing internal Codex error variants.
 const codexErrorInfoSchema = z.union([
   z.enum([
     "contextWindowExceeded",
     "sessionBudgetExceeded",
     "usageLimitExceeded",
     "rateLimitExceeded",
+    "flexUnavailable",
     "serverOverloaded",
     "cyberPolicy",
     "misalignmentPolicyViolation",
+    "tooManyDenials",
     "internalServerError",
     "unauthorized",
     "badRequest",
@@ -142,11 +149,14 @@ const codexErrorInfoSchema = z.union([
   z.object({
     activeTurnNotSteerable: z.object({ turnKind: z.enum(["review", "compact"]) }).strict(),
   }),
+  z.string(),
+  z.record(z.string(), z.unknown()),
 ]);
 
 export const threadTurnSchema = z
   .object({
     id: z.string().min(1),
+    rootTurnId: z.string().nullable(),
     items: z.array(threadItemSchema),
     itemsView: z.enum(["notLoaded", "summary", "full"]),
     status: z.enum(["completed", "interrupted", "failed", "inProgress"]),
@@ -160,6 +170,7 @@ export const threadTurnSchema = z
             errorType: z.string().nullable(),
             detailedExplanation: z.string().nullable(),
             steer: z.object({ message: z.string() }).strict().nullable(),
+            reviewTarget: z.string().nullable().optional(),
           })
           .strict()
           .nullable(),
@@ -172,35 +183,80 @@ export const threadTurnSchema = z
   })
   .strict();
 
-export const turnsPageSchema = z
-  .object({
-    data: z.array(threadTurnSchema),
-    nextCursor: z.string().nullable(),
-    backwardsCursor: z.string().nullable(),
-  })
-  .loose();
+export type AppServerTurn = z.infer<typeof threadTurnSchema>;
+export type CodexErrorInfo = NonNullable<NonNullable<AppServerTurn["error"]>["codexErrorInfo"]>;
+export type MisalignmentErrorDetails = NonNullable<
+  NonNullable<AppServerTurn["error"]>["misalignment"]
+>;
 
-export function parseTurnsPage(value: unknown) {
-  return turnsPageSchema.parse(value);
+const threadTimelineEntrySchema = z.discriminatedUnion("type", [
+  z
+    .object({
+      type: z.literal("item"),
+      position: z.number(),
+      turnId: z.string().min(1),
+      item: threadItemSchema,
+    })
+    .strict(),
+  z.object({ type: z.literal("realtime"), position: z.number(), item: z.unknown() }).strict(),
+  z
+    .object({
+      type: z.literal("turnStarted"),
+      position: z.number(),
+      turnId: z.string().min(1),
+      startedAt: z.number().nullable(),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("turnCompleted"),
+      position: z.number(),
+      turnId: z.string().min(1),
+      status: z.string(),
+      error: z.unknown().nullable(),
+      startedAt: z.number().nullable(),
+      completedAt: z.number().nullable(),
+      durationMs: z.number().nullable(),
+    })
+    .strict(),
+]);
+
+export const threadTimelinePageSchema = z
+  .object({
+    data: z.array(threadTimelineEntrySchema),
+    nextCursor: z.string().nullable(),
+    activeRealtimeSessionAtPageStart: z.string().nullable(),
+  })
+  .strict();
+
+export type AppServerTimelinePage = z.infer<typeof threadTimelinePageSchema>;
+export type AppServerTimelineEntry = AppServerTimelinePage["data"][number];
+
+export function parseThreadTimelinePage(value: unknown) {
+  return threadTimelinePageSchema.parse(value);
 }
 
-export const threadItemsPageSchema = z
+// Item lookup and timeline paging have different wire contracts. Keep this response separate:
+// detail reads return only requested persisted items, never timeline positions or cursors.
+export const threadItemsReadResponseSchema = z
   .object({
     data: z.array(
       z
         .object({
           turnId: z.string().min(1),
           item: threadItemSchema,
+          startedAtMs: z.number().nullable(),
+          completedAtMs: z.number().nullable(),
         })
         .strict(),
     ),
-    nextCursor: z.string().nullable(),
-    backwardsCursor: z.string().nullable(),
   })
-  .loose();
+  .strict();
 
-export function parseThreadItemsPage(value: unknown) {
-  return threadItemsPageSchema.parse(value);
+export type AppServerItemsReadResponse = z.infer<typeof threadItemsReadResponseSchema>;
+
+export function parseThreadItemsReadResponse(value: unknown) {
+  return threadItemsReadResponseSchema.parse(value);
 }
 
 export const appServerThreadStatusSchema = z.discriminatedUnion("type", [
@@ -215,6 +271,8 @@ export const appServerThreadStatusSchema = z.discriminatedUnion("type", [
     .strict(),
 ]);
 
+export type AppServerThreadStatus = z.infer<typeof appServerThreadStatusSchema>;
+
 export function appServerThreadStatusFromUnknown(value: unknown) {
   const parsed = appServerThreadStatusSchema.safeParse(value);
   return parsed.success ? parsed.data : null;
@@ -223,6 +281,17 @@ export function appServerThreadStatusFromUnknown(value: unknown) {
 export const appServerThreadSchema = z
   .object({
     id: z.string().min(1),
+    environments: z
+      .array(
+        z
+          .object({
+            environmentId: z.string().min(1),
+            cwd: z.string().min(1),
+            runtimeWorkspaceRoots: z.array(z.string().min(1)),
+          })
+          .strict(),
+      )
+      .nullable(),
     extra: z.object({}).strict().nullable(),
     sessionId: z.string().min(1),
     forkedFromId: z.string().nullable(),
@@ -245,7 +314,10 @@ export const appServerThreadSchema = z
       .nullable(),
     sectionEnteredAt: z.number().nullable(),
     projectId: z.string().nullable(),
-    historyMode: z.enum(["legacy", "paginated"]),
+    // Existing daemons can retain threads created before timeline pagination was enabled. The
+    // Gateway never uses their legacy page fields; it normalizes this metadata and always reads
+    // history through thread/timeline/list.
+    historyMode: z.enum(["legacy", "paginated"]).transform(() => "paginated" as const),
     modelProvider: z.string(),
     model: z.string().nullable(),
     reasoningEffort: z.string().nullable(),
@@ -256,6 +328,7 @@ export const appServerThreadSchema = z
     path: z.string().nullable(),
     cwd: z.string(),
     cliVersion: z.string(),
+    originator: z.string().nullable(),
     name: z.string().nullable(),
     source: z.union([
       z.enum(["cli", "vscode", "exec", "appServer", "unknown"]),
@@ -286,6 +359,7 @@ export const appServerThreadSchema = z
     threadSource: z.string().nullable(),
     agentNickname: z.string().nullable(),
     agentRole: z.string().nullable(),
+    daybreakEnabled: z.boolean().nullable(),
     gitInfo: z
       .object({
         sha: z.string().nullable(),
@@ -296,12 +370,18 @@ export const appServerThreadSchema = z
       .nullable(),
     turns: z.array(threadTurnSchema),
   })
-  .loose();
+  .strict();
 
-export const gatewayThreadSchema = appServerThreadSchema.omit({ projectId: true }).extend({
-  appServerProjectId: z.string().nullable(),
+export type AppServerThread = z.infer<typeof appServerThreadSchema>;
+export type AppServerThreadSection = NonNullable<AppServerThread["section"]>;
+export type AppServerSessionSource = AppServerThread["source"];
+export type AppServerSubAgentSource = Extract<
+  AppServerSessionSource,
+  { subAgent: unknown }
+>["subAgent"];
+
+export const gatewayThreadSchema = appServerThreadSchema.extend({
   hostId: z.number().int().positive(),
-  projectId: z.number().int().positive().nullable(),
   pinned: z.boolean(),
   title: z.string().nullable(),
 });
@@ -483,11 +563,49 @@ const threadResumeResultSchema = z
         })
         .strict(),
     ]),
-    initialTurnsPage: turnsPageSchema.nullable().optional(),
-    turnsBackwardsCursor: z.string().nullable().optional(),
   })
   .loose();
 
 export function parseThreadResumeResult(value: unknown) {
   return threadResumeResultSchema.parse(value);
+}
+
+export const threadAttachmentSchema = z
+  .object({
+    id: z.string().min(1),
+    attachmentType: z.string().min(1),
+    identityKey: z.string().min(1),
+    payload: z.unknown(),
+    createdAt: z.number().int().nonnegative(),
+  })
+  .strict();
+
+const threadAttachmentsPageSchema = z
+  .object({
+    data: z.array(threadAttachmentSchema),
+    nextCursor: z.string().nullable().optional(),
+  })
+  .loose();
+
+export function parseThreadAttachment(value: unknown): ThreadAttachment {
+  return threadAttachmentSchema.parse(value);
+}
+
+export function parseThreadAttachmentsPage(value: unknown): ThreadAttachmentsPage {
+  const page = threadAttachmentsPageSchema.parse(value);
+  return { data: page.data, nextCursor: page.nextCursor ?? null };
+}
+
+export function parseThreadAttachmentAddResponse(value: unknown) {
+  return z
+    .object({
+      outcome: z.enum(["created", "existing"]),
+      attachment: threadAttachmentSchema,
+    })
+    .strict()
+    .parse(value);
+}
+
+export function parseThreadAttachmentRemoveResponse(value: unknown) {
+  return z.object({}).loose().parse(value);
 }

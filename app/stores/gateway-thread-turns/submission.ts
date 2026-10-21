@@ -1,5 +1,4 @@
 import type { ComposerTurnOptions } from "~~/shared/types";
-import { useGatewayCatalogStore } from "@/stores/gateway-catalog";
 import { useGatewayBootstrapStore } from "@/stores/gateway-bootstrap";
 import { useGatewayComposerStore } from "@/stores/gateway-composer";
 import { useGatewayNavigationStore } from "@/stores/gateway-navigation";
@@ -22,9 +21,12 @@ import { requestTurnStart, requestTurnSteer } from "./transport";
 import type { Translate, TurnRequestResult } from "./types";
 import { captureSessionEpoch } from "@/utils/session-epoch";
 
-export async function sendTurn(t: Translate, text: string, options: ComposerTurnOptions = {}) {
+export async function sendTurn(
+  t: Translate,
+  text: string,
+  options: ComposerTurnOptions = {},
+): Promise<boolean> {
   const sessionIsCurrent = captureSessionEpoch();
-  const catalog = useGatewayCatalogStore();
   const gateway = useGatewayBootstrapStore();
   const composer = useGatewayComposerStore();
   const navigation = useGatewayNavigationStore();
@@ -33,7 +35,7 @@ export async function sendTurn(t: Translate, text: string, options: ComposerTurn
   const hostId = navigation.selectedHostId;
   const threadId = navigation.selectedThreadId;
   if (hostId === null || threadId === null) {
-    return;
+    return false;
   }
 
   const runtime = runtimeStore.threadRuntimeProjection(hostId, threadId);
@@ -56,13 +58,7 @@ export async function sendTurn(t: Translate, text: string, options: ComposerTurn
     insertOptimisticNewTurnMessage(threadId, clientUserMessageId, optimisticContent);
   }
 
-  const projectId = navigation.selectedProjectId;
-  if (projectId === null) {
-    gateway.setError(t("app.projectRequiredForFileReferences"), { hostId, threadId });
-    if (!shouldSteerActiveTurn) runtimeStore.setThreadStatus(hostId, threadId, "completed");
-    return;
-  }
-  const cwd = catalog.projects.find((project) => project.id === projectId)?.remotePath ?? null;
+  const cwd = views.currentThread?.cwd ?? navigation.selectedCwd;
   const requestKind = shouldSteerActiveTurn ? "steer" : "start";
   const executeTurnRequest =
     steerTurnId !== null
@@ -70,7 +66,6 @@ export async function sendTurn(t: Translate, text: string, options: ComposerTurn
           requestTurnSteer({
             hostId,
             threadId,
-            projectId,
             expectedTurnId: steerTurnId,
             text,
             clientUserMessageId,
@@ -80,7 +75,6 @@ export async function sendTurn(t: Translate, text: string, options: ComposerTurn
           requestTurnStart({
             hostId,
             threadId,
-            projectId,
             text,
             clientUserMessageId,
             cwd,
@@ -92,29 +86,32 @@ export async function sendTurn(t: Translate, text: string, options: ComposerTurn
   try {
     const result = await runTurnRequestWithAutoRetry<TurnRequestResult>(
       t,
-      { kind: requestKind, hostId, projectId, threadId, cwd, text, options },
+      { kind: requestKind, hostId, threadId, cwd, text, options },
       executeTurnRequest,
     );
-    if (!sessionIsCurrent()) return;
+    if (!sessionIsCurrent()) return false;
     applyAcceptedTurnResult(hostId, threadId, result, clientUserMessageId, optimisticContent);
     if (!shouldSteerActiveTurn) {
       composer.updateSelectedThreadSettings({
         ...(options.model !== undefined ? { model: options.model } : {}),
         ...(options.effort !== undefined ? { effort: options.effort } : {}),
+        ...(options.summary !== undefined ? { summary: options.summary } : {}),
         ...(options.approvalPolicy !== undefined ? { approvalPolicy: options.approvalPolicy } : {}),
       });
     }
+    return true;
   } catch (error: unknown) {
-    if (!sessionIsCurrent()) return;
+    if (!sessionIsCurrent()) return false;
     useGatewayThreadTurnsStore().clearRequest(hostId, threadId);
     gateway.setError(messageFromError(error, t("app.sendMessageFailed"), errorMessageLabels(t)), {
       hostId,
-      projectId,
+      cwd,
       threadId,
     });
     if (!shouldSteerActiveTurn) {
       runtimeStore.setThreadStatus(hostId, threadId, "completed");
     }
+    return false;
   } finally {
     if (sessionIsCurrent()) views.loading = false;
   }

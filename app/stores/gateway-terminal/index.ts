@@ -12,6 +12,8 @@ interface GatewayTerminalState {
 
 export const useGatewayTerminalStore = defineStore("gateway-terminal", () => {
   const state = reactive<GatewayTerminalState>(createTerminalState());
+  const pendingOutputs = new Map<string, string>();
+  const pendingFlushes = new Map<string, number>();
 
   const terminalSessionSnapshots = computed(() => Object.values(state.terminalSessions));
 
@@ -31,18 +33,30 @@ export const useGatewayTerminalStore = defineStore("gateway-terminal", () => {
   }
 
   function appendTerminalOutput(sessionId: string, data: string) {
-    const session = state.terminalSessions[sessionId];
-    if (!session) {
-      return;
-    }
-    state.terminalSessions = {
-      ...state.terminalSessions,
-      [sessionId]: {
-        ...session,
-        ...appendOutputChunk(session, data),
-        lastActiveAt: new Date().toISOString(),
-      },
+    if (!state.terminalSessions[sessionId]) return;
+    pendingOutputs.set(sessionId, `${pendingOutputs.get(sessionId) ?? ""}${data}`);
+    if (pendingFlushes.has(sessionId)) return;
+    const flush = () => {
+      pendingFlushes.delete(sessionId);
+      const output = pendingOutputs.get(sessionId);
+      pendingOutputs.delete(sessionId);
+      if (output === undefined) return;
+      const session = state.terminalSessions[sessionId];
+      if (!session) return;
+      state.terminalSessions = {
+        ...state.terminalSessions,
+        [sessionId]: {
+          ...session,
+          ...appendOutputChunk(session, output),
+          lastActiveAt: new Date().toISOString(),
+        },
+      };
     };
+    const handle =
+      typeof requestAnimationFrame === "function"
+        ? requestAnimationFrame(flush)
+        : window.setTimeout(flush, 16);
+    pendingFlushes.set(sessionId, handle);
   }
 
   function markTerminalExited(sessionId: string, message: string) {
@@ -62,11 +76,24 @@ export const useGatewayTerminalStore = defineStore("gateway-terminal", () => {
   }
 
   function removeTerminalSession(sessionId: string) {
+    const pending = pendingFlushes.get(sessionId);
+    if (pending !== undefined) {
+      if (typeof cancelAnimationFrame === "function") cancelAnimationFrame(pending);
+      else window.clearTimeout(pending);
+      pendingFlushes.delete(sessionId);
+    }
+    pendingOutputs.delete(sessionId);
     const { [sessionId]: _removed, ...terminalSessions } = state.terminalSessions;
     state.terminalSessions = terminalSessions;
   }
 
   function resetState() {
+    for (const handle of pendingFlushes.values()) {
+      if (typeof cancelAnimationFrame === "function") cancelAnimationFrame(handle);
+      else window.clearTimeout(handle);
+    }
+    pendingFlushes.clear();
+    pendingOutputs.clear();
     Object.assign(state, createTerminalState());
   }
 

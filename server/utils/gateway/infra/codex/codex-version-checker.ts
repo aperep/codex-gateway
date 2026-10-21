@@ -17,7 +17,10 @@ export class CodexVersionChecker {
     if (!parsed) {
       throw new Error(`Unable to parse remote Codex version: ${result.stdout.trim()}`);
     }
-    return parsed.version;
+    const installationLayout = result.stdout.includes("installation-layout standalone")
+      ? "standalone"
+      : "npm-or-external";
+    return { version: parsed.version, installationLayout } as const;
   }
 
   async readVersionOrRecoverableMissing(host: HostWithSecret) {
@@ -32,7 +35,7 @@ export class CodexVersionChecker {
         status: "upgrading",
         message: `${hostDisplayName(host)} 的远端 Codex 安装缺失或损坏，正在重新安装 ${SUPPORTED_CODEX_VERSION}`,
       });
-      return "0.0.0";
+      return { version: "0.0.0", installationLayout: "npm-or-external" } as const;
     }
   }
 }

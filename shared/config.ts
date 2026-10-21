@@ -1,18 +1,26 @@
 import type { GatewayConfig, GatewayNotificationSettings } from "./types";
 
-// Keep first paint bounded for item-heavy Codex 0.147 histories. Older turns are fetched only by
-// explicit history navigation; do not silently prepend a background page after the Agent viewport
-// mounts. A same-page cached view may retain a wider depth that the user already loaded.
-export const INITIAL_TURN_PAGE_LIMIT = 2;
-export const OLDER_TURN_PAGE_LIMIT = 5;
+// thread/timeline/list counts entries, not Turns. One long running Turn must not trigger a
+// "two Turns missing" refresh or block first paint on hundreds of tools. Older entries remain
+// behind the official opaque cursor and are loaded only by explicit history navigation.
+export const INITIAL_TIMELINE_PAGE_LIMIT = 20;
+export const TIMELINE_PAGE_LIMIT = 100;
 export const SERVER_TURN_CACHE_LIMIT = 50;
 export const SERVER_THREAD_CACHE_LIMIT = 100;
-export const CLIENT_THREAD_CACHE_LIMIT = 24;
+// Match the bounded workspace deck used by mature multi-agent clients: inactive conversations are
+// data caches, not permanent mounted sessions. Ten recent threads keeps route switching fast while
+// preventing many long transcripts from accumulating for the lifetime of a browser tab.
+export const CLIENT_THREAD_CACHE_LIMIT = 10;
+// Recent intermediate work remains warm; old collapsed work can always be fetched from Codex.
+// Limit the noisy command string independently: virtualizing its row does not bound Pinia data.
+export const CLIENT_COMMAND_OUTPUT_CHARS = 128 * 1024;
+export const CLIENT_THREAD_INTERMEDIATE_TURNS = 3;
 export const DEFAULT_BARK_SERVER_URL = "https://api.day.app";
 export const DEFAULT_BARK_GROUP = "Codex Gateway";
 
 export function defaultNotificationSettings(): GatewayNotificationSettings {
   return {
+    webPush: { enabled: false },
     bark: {
       enabled: false,
       serverUrl: DEFAULT_BARK_SERVER_URL,
@@ -30,6 +38,7 @@ export function normalizeNotificationSettings(
   const deviceKey = settings?.bark?.deviceKey?.trim();
   const group = settings?.bark?.group?.trim();
   return {
+    webPush: { enabled: settings?.webPush?.enabled ?? defaults.webPush.enabled },
     bark: {
       ...defaults.bark,
       ...settings?.bark,
@@ -43,9 +52,8 @@ export function normalizeNotificationSettings(
 
 export function defaultGatewayConfig(): GatewayConfig {
   return {
-    version: 1,
+    version: 2,
     hosts: [],
-    projects: [],
     pinnedThreads: [],
     notifications: defaultNotificationSettings(),
   };

@@ -52,7 +52,7 @@ export function useRecentThreadActivity() {
   function openRecentThread(thread: ThreadActivitySummary) {
     void threadView.openThread(thread.threadId, {
       hostId: thread.hostId,
-      projectId: thread.projectId,
+      cwd: thread.cwd,
     });
   }
 
@@ -74,7 +74,6 @@ function keyFor(thread: ThreadActivitySummary) {
 function toPinnedThread(thread: ThreadActivitySummary): PinnedThreadRecord {
   return {
     hostId: thread.hostId,
-    projectId: thread.projectId,
     threadId: thread.threadId,
     title: thread.title,
     subtitle: thread.cwd,

@@ -11,7 +11,7 @@ export const useFileGitComparisonStore = defineStore("file-git-comparisons", () 
   const pendingLoads = new Map<string, Promise<FileGitComparisonState>>();
 
   function register(document: FilePreviewDocument) {
-    return document.projectId === null
+    return document.cwd === null
       ? stateForUnavailableDocument(document.key)
       : stateForTarget(target(document));
   }
@@ -40,7 +40,7 @@ export const useFileGitComparisonStore = defineStore("file-git-comparisons", () 
 
   function load(document: FilePreviewDocument, force = false) {
     const state = stateFor(document);
-    if (!canCompare(document) || document.projectId === null) {
+    if (!canCompare(document) || document.cwd === null) {
       clearResult(state);
       state.stale = false;
       state.loading = false;
@@ -103,7 +103,7 @@ export const useFileGitComparisonStore = defineStore("file-git-comparisons", () 
   }
 
   function invalidate(document: FilePreviewDocument) {
-    if (document.projectId !== null) invalidateTarget(target(document));
+    if (document.cwd !== null) invalidateTarget(target(document));
   }
 
   function invalidateTarget(input: FileGitComparisonTarget) {
@@ -133,14 +133,14 @@ export const useFileGitComparisonStore = defineStore("file-git-comparisons", () 
 });
 
 function target(document: FilePreviewDocument): FileGitComparisonTarget {
-  if (document.projectId === null) {
-    throw new Error("A project is required to compare a remote Git file");
+  if (document.cwd === null) {
+    throw new Error("A working directory is required to compare a remote Git file");
   }
-  return { hostId: document.hostId, projectId: document.projectId, path: document.path };
+  return { hostId: document.hostId, cwd: document.cwd, path: document.path };
 }
 
 function comparisonKey(input: FileGitComparisonTarget) {
-  return `${input.hostId}:${input.projectId}:${input.path}`;
+  return JSON.stringify([input.hostId, input.cwd, input.path]);
 }
 
 function createState(key: string) {
@@ -157,10 +157,9 @@ function createState(key: string) {
 
 function canCompare(document: FilePreviewDocument) {
   return (
-    document.projectId !== null &&
+    document.cwd !== null &&
     document.previewKind === "text" &&
     document.objectUrl !== "" &&
-    !document.stale &&
     (document.size ?? 0) <= MAX_EDITABLE_FILE_BYTES
   );
 }

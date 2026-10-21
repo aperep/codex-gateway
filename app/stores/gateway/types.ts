@@ -1,13 +1,13 @@
 import type {
   GatewayThread,
   GatewayEvent,
-  ThreadHistoryState,
-  ThreadTimelineTurn,
+  ThreadTimelineHistoryState,
   TerminalOpenTarget,
   TerminalSessionSnapshot,
   ThreadRuntimeStatus,
   UploadedFileRecord,
   FileReference,
+  ProjectRecord,
 } from "~~/shared/types";
 
 export type { ThreadRuntimeStatus };
@@ -17,28 +17,29 @@ export type HostConnectionStatus =
   | "upgrading"
   | "restarting"
   | "connecting"
+  | "mfaConnecting"
   | "connected"
-  | "failed";
+  | "failed"
+  | "mfaRequired";
 
 export interface ThreadListResponse {
   data?: GatewayThread[];
   nextCursor?: string | null;
   backwardsCursor?: string | null;
   projects?: ProjectRecord[];
-  projectDirectoryAvailability?: Record<number, ProjectDirectoryAvailability>;
 }
 
 export interface ThreadViewState {
   hostId: number;
-  projectId: number | null;
+  cwd: string | null;
   threadId: string;
   currentThread: GatewayThread | null;
-  history: ThreadHistoryState | null;
-  timelineTurns: ThreadTimelineTurn[];
+  history: ThreadTimelineHistoryState | null;
   events: GatewayEvent[];
-  olderTurnsCursor: string | null;
-  newerTurnsCursor: string | null;
+  oldestTimelineCursor: string | null;
   lastEventId: number;
+  /** Highest event id already reduced into this view's history. */
+  appliedEventId?: number;
   eventEpoch: string;
   loading: boolean;
   error: string | null;
@@ -70,7 +71,7 @@ export interface TerminalSessionState extends TerminalSessionSnapshot {
 export interface GatewayErrorState {
   message: string;
   hostId: number | null;
-  projectId: number | null;
+  cwd: string | null;
   threadId: string | null;
   turnId: string | null;
   transient: boolean;

@@ -4,7 +4,7 @@ import { inject, provide } from "vue";
 
 export interface FilePreviewContext {
   hostId: Ref<number | null>;
-  projectId: Ref<number | null>;
+  cwd: Ref<string | null>;
   threadId: Ref<string | null>;
   workspaceRoot: Ref<string | null>;
 }

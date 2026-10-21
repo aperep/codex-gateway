@@ -5,12 +5,10 @@ import { posix } from "node:path";
 import { remoteLoginShellCommand } from "../ssh/remote-command";
 import { shellQuote } from "../ssh/shell";
 import type { SshConnectionPool } from "../ssh/ssh-connection";
-import type { ProjectDirectoryAvailability } from "~~/shared/types";
 import type { HostWithSecret, RemoteFileMetadata, RemoteFileResult } from "../ssh/ssh-types";
 import {
   classifyRemoteDirectoryError,
   classifyRemoteFileError,
-  isMissingSftpPath,
   RemoteDirectoryNotFoundError,
   RemoteFileInvalidPathError,
   RemoteFileNotRegularError,
@@ -74,24 +72,6 @@ export class RemoteFileService {
       throw classifyRemoteFileError(error, path);
     }
     return statFile(sftp, path);
-  }
-
-  async inspectProjectDirectories(host: HostWithSecret, paths: string[]) {
-    const absolutePaths = [
-      ...new Set(paths.map((path) => path.trim()).filter((path) => path.startsWith("/"))),
-    ];
-    if (absolutePaths.length === 0) {
-      return new Map<string, ProjectDirectoryAvailability>();
-    }
-    const sftp = await this.ssh.sftp(host);
-    const entries = await Promise.all(
-      absolutePaths.map(async (path) => [path, await inspectDirectory(sftp, path)] as const),
-    );
-    return new Map(
-      entries.filter(
-        (entry): entry is readonly [string, ProjectDirectoryAvailability] => entry[1] !== null,
-      ),
-    );
   }
 
   async statRemoteFile(
@@ -176,8 +156,17 @@ export class RemoteFileService {
   }
 
   async createUploadDirectory(host: HostWithSecret) {
-    const script =
-      'root="${TMPDIR:-/tmp}/codex-gateway-uploads"; mkdir -p "$root"; mktemp -d "$root/upload.XXXXXXXXXX"';
+    // Match the official TUI's attachment layout on the app-server host. Each file gets its
+    // own directory so original names survive, including two uploads with the same filename.
+    // Resolve CODEX_HOME in the login shell used by Codex; /tmp is not durable attachment storage.
+    const script = `
+set -eu
+umask 077
+root="\${CODEX_HOME:-$HOME/.codex}/attachments/${randomUUID()}"
+mkdir -p "$root"
+cd "$root"
+pwd -P
+`;
     const result = await this.ssh.exec(host, remoteLoginShellCommand(script));
     if (result.code !== 0) {
       throw new Error(result.stderr || "Failed to create remote upload directory");
@@ -256,21 +245,6 @@ function renameFile(
 
 function unlinkIfPresent(sftp: Awaited<ReturnType<SshConnectionPool["sftp"]>>, path: string) {
   return new Promise<void>((resolve) => sftp.unlink(path, () => resolve()));
-}
-
-async function inspectDirectory(
-  sftp: Awaited<ReturnType<SshConnectionPool["sftp"]>>,
-  path: string,
-) {
-  return new Promise<ProjectDirectoryAvailability | null>((resolve) => {
-    sftp.stat(path, (error, stats) => {
-      if (error) {
-        resolve(isMissingSftpPath(error) ? "missing" : null);
-        return;
-      }
-      resolve(stats.isDirectory() ? "available" : "missing");
-    });
-  });
 }
 
 async function directoryResult(sftp: SFTPWrapper, path: string, source: FileEntryWithStats[]) {

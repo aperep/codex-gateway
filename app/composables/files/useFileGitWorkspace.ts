@@ -4,16 +4,12 @@ import { useFileGitWorkspaceStore } from "@/stores/file-workspace/git/workspace"
 
 export function useFileGitWorkspace(input: {
   hostId: MaybeRefOrGetter<number>;
-  projectId: MaybeRefOrGetter<number | null>;
   rootPath: MaybeRefOrGetter<string>;
 }) {
   const store = useFileGitWorkspaceStore();
   const scope = computed(() => {
-    const projectId = toValue(input.projectId);
     const rootPath = toValue(input.rootPath);
-    return projectId === null || rootPath === ""
-      ? null
-      : { hostId: toValue(input.hostId), projectId, rootPath };
+    return rootPath === "" ? null : { hostId: toValue(input.hostId), cwd: rootPath, rootPath };
   });
   const state = computed(() => (scope.value === null ? null : store.stateFor(scope.value)));
   const changes = computed(() => (scope.value === null ? [] : store.changesFor(scope.value)));

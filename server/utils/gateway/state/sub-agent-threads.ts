@@ -1,23 +1,21 @@
-import type { AppServerThread, RpcEnvelope, ThreadHistoryItem } from "~~/shared/types";
+import type { AgentEvent } from "~~/shared/agent/events";
+import type { AppServerThread, ThreadHistoryItem } from "~~/shared/types";
 import {
   isAppServerSubAgentThread,
   threadHistoryItemFromUnknown,
 } from "~~/shared/runtime/app-server";
-import { recordFromUnknown } from "~~/shared/utils/records";
 import { trimmedOrNull } from "~~/shared/utils/strings";
-import { gatewayMemoryState, nowIso } from "./memory";
+import { currentGatewayMemoryState, nowIso } from "./memory";
 
 export const subAgentThreadStore = {
   pruneToHosts(hostIds: Set<number>) {
-    gatewayMemoryState.subAgentThreads = gatewayMemoryState.subAgentThreads.filter((thread) =>
-      hostIds.has(thread.hostId),
-    );
+    currentGatewayMemoryState().subAgentThreads =
+      currentGatewayMemoryState().subAgentThreads.filter((thread) => hostIds.has(thread.hostId));
   },
 
   deleteForHost(hostId: number) {
-    gatewayMemoryState.subAgentThreads = gatewayMemoryState.subAgentThreads.filter(
-      (thread) => thread.hostId !== hostId,
-    );
+    currentGatewayMemoryState().subAgentThreads =
+      currentGatewayMemoryState().subAgentThreads.filter((thread) => thread.hostId !== hostId);
   },
 
   record(hostId: number, threadId: string, parentThreadId: string | null = null) {
@@ -26,22 +24,22 @@ export const subAgentThreadStore = {
       return;
     }
     const updatedAt = nowIso();
-    const index = gatewayMemoryState.subAgentThreads.findIndex(
+    const index = currentGatewayMemoryState().subAgentThreads.findIndex(
       (thread) => thread.hostId === hostId && thread.threadId === normalizedThreadId,
     );
     if (index >= 0) {
-      const existing = gatewayMemoryState.subAgentThreads[index];
+      const existing = currentGatewayMemoryState().subAgentThreads[index];
       if (existing === undefined) {
         return;
       }
-      gatewayMemoryState.subAgentThreads[index] = {
+      currentGatewayMemoryState().subAgentThreads[index] = {
         ...existing,
         parentThreadId: parentThreadId ?? existing.parentThreadId,
         updatedAt,
       };
       return;
     }
-    gatewayMemoryState.subAgentThreads.push({
+    currentGatewayMemoryState().subAgentThreads.push({
       hostId,
       threadId: normalizedThreadId,
       parentThreadId,
@@ -56,14 +54,14 @@ export const subAgentThreadStore = {
     this.record(hostId, String(thread.id), parentThreadIdFromMetadata(thread));
   },
 
-  recordRuntimeEvent(hostId: number, parentThreadId: string, method: string, payload: RpcEnvelope) {
-    for (const threadId of subAgentThreadIdsFromRuntimeEvent(method, payload)) {
+  recordRuntimeEvent(hostId: number, parentThreadId: string, event: AgentEvent) {
+    for (const threadId of subAgentThreadIdsFromEvent(event)) {
       this.record(hostId, threadId, parentThreadId);
     }
   },
 
   isSubAgentThread(hostId: number, threadId: string) {
-    return gatewayMemoryState.subAgentThreads.some(
+    return currentGatewayMemoryState().subAgentThreads.some(
       (thread) => thread.hostId === hostId && thread.threadId === threadId,
     );
   },
@@ -78,11 +76,13 @@ export function parentThreadIdFromMetadata(thread: AppServerThread) {
   return typeof parentThreadId === "string" ? trimmedOrNull(parentThreadId) : null;
 }
 
-function subAgentThreadIdsFromRuntimeEvent(method: string, payload: RpcEnvelope) {
-  if (method !== "item/started" && method !== "item/completed") {
+function subAgentThreadIdsFromEvent(event: AgentEvent) {
+  // Sub-agent activity arrives as pre-built timeline items (item/started |
+  // item/completed in the Codex feed; both map to timeline.item.upsert).
+  if (event.type !== "timeline.item.upsert") {
     return [];
   }
-  const item = threadHistoryItemFromUnknown(recordFromUnknown(payload.params)?.item);
+  const item = threadHistoryItemFromUnknown(event.item);
   return item === null ? [] : subAgentThreadIdsFromItem(item);
 }
 

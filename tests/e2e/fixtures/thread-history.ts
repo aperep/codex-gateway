@@ -19,13 +19,12 @@ export function defaultGatewayHost(hostId = 1): HostRecord {
   };
 }
 
-export function defaultGatewayProject(hostId = 1, projectId = 1): ProjectRecord {
+export function defaultGatewayProject(hostId = 1, remotePath = "/tmp/e2e"): ProjectRecord {
   const now = new Date().toISOString();
   return {
-    id: projectId,
     hostId,
     name: "E2E Project",
-    remotePath: "/tmp/e2e",
+    remotePath,
     createdAt: now,
     updatedAt: now,
   };

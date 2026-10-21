@@ -3,12 +3,36 @@ import { threadHistoryTurnFromUnknown } from "~~/shared/runtime/app-server";
 
 type RealtimeResponseMessage = Extract<RealtimeServerMessage, { requestId: string }>;
 
+export function expectHostUpgradesSnapshot(message: RealtimeResponseMessage) {
+  if (message.type !== "host.upgrades.snapshot")
+    unexpectedResponse("host.upgrades.snapshot", message.type);
+  return message;
+}
+
+export function expectWebPushConfigured(message: RealtimeResponseMessage) {
+  if (message.type !== "notification.webPush.configured")
+    unexpectedResponse("notification.webPush.configured", message.type);
+  return message;
+}
+
+export function expectHostDaemonRestarted(message: RealtimeResponseMessage) {
+  if (message.type !== "host.daemon.restarted") {
+    unexpectedResponse("host.daemon.restarted", message.type);
+  }
+  return message;
+}
+
 function unexpectedResponse(expected: RealtimeResponseMessage["type"], actual: string): never {
   throw new Error(`Expected realtime response ${expected}, received ${actual}`);
 }
 
 export function expectBrowserOpened(message: RealtimeResponseMessage) {
   if (message.type !== "browser.opened") unexpectedResponse("browser.opened", message.type);
+  return message;
+}
+
+export function expectBrowserClosed(message: RealtimeResponseMessage) {
+  if (message.type !== "browser.closed") unexpectedResponse("browser.closed", message.type);
   return message;
 }
 
@@ -29,6 +53,13 @@ export function expectFileGitWorkspaceSnapshot(message: RealtimeResponseMessage)
 export function expectProjectFileSearchResults(message: RealtimeResponseMessage) {
   if (message.type !== "file.search.results") {
     unexpectedResponse("file.search.results", message.type);
+  }
+  return message;
+}
+
+export function expectProjectDefaultsSnapshot(message: RealtimeResponseMessage) {
+  if (message.type !== "project.defaults.snapshot") {
+    unexpectedResponse("project.defaults.snapshot", message.type);
   }
   return message;
 }
@@ -56,6 +87,11 @@ export function expectThreadGoalSnapshot(message: RealtimeResponseMessage) {
 
 export function expectTerminalOpened(message: RealtimeResponseMessage) {
   if (message.type !== "terminal.opened") unexpectedResponse("terminal.opened", message.type);
+  return message;
+}
+
+export function expectTerminalClosed(message: RealtimeResponseMessage) {
+  if (message.type !== "terminal.closed") unexpectedResponse("terminal.closed", message.type);
   return message;
 }
 
@@ -114,12 +150,44 @@ export function expectMcpEventStreamAccepted(message: RealtimeResponseMessage) {
   return message;
 }
 
-export function expectThreadTurnsPage(message: RealtimeResponseMessage) {
-  if (message.type !== "thread.turns.page") unexpectedResponse("thread.turns.page", message.type);
+export function expectThreadTimelinePage(message: RealtimeResponseMessage) {
+  if (message.type !== "thread.timeline.page") {
+    unexpectedResponse("thread.timeline.page", message.type);
+  }
   return message;
 }
 
-export function expectThreadItemsPage(message: RealtimeResponseMessage) {
-  if (message.type !== "thread.items.page") unexpectedResponse("thread.items.page", message.type);
+export function expectThreadItemsResult(message: RealtimeResponseMessage) {
+  if (message.type !== "thread.items.result") {
+    unexpectedResponse("thread.items.result", message.type);
+  }
+  return message;
+}
+
+export function expectThreadAttachmentsPage(message: RealtimeResponseMessage) {
+  if (message.type !== "thread.attachments.page") {
+    unexpectedResponse("thread.attachments.page", message.type);
+  }
+  return message;
+}
+
+export function expectThreadAttachmentAdded(message: RealtimeResponseMessage) {
+  if (message.type !== "thread.attachment.added") {
+    unexpectedResponse("thread.attachment.added", message.type);
+  }
+  return message;
+}
+
+export function expectThreadAttachmentRemoved(message: RealtimeResponseMessage) {
+  if (message.type !== "thread.attachment.removed") {
+    unexpectedResponse("thread.attachment.removed", message.type);
+  }
+  return message;
+}
+
+export function expectThreadSettingsSnapshot(message: RealtimeResponseMessage) {
+  if (message.type !== "thread.settings.snapshot") {
+    unexpectedResponse("thread.settings.snapshot", message.type);
+  }
   return message;
 }

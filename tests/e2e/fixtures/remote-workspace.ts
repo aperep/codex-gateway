@@ -20,7 +20,7 @@ export interface RemoteWorkspaceFixture {
   readonly remote: RemoteCodexEnv;
   addHost(name?: string): Promise<UiHost>;
   addProject(hostId: number, name?: string, remotePath?: string): Promise<UiProject>;
-  startThread(projectId: number): Promise<string>;
+  startThread(cwd: string): Promise<string>;
   sendImageTurn(
     targetPage: Page,
     params: {
@@ -64,8 +64,8 @@ export const test = base.extend<RemoteWorkspaceTestFixtures, RemoteWorkspaceWork
       remote: remoteCodexEnvironment,
       addHost,
       addProject,
-      startThread: async (projectId) =>
-        await startRemoteThreadFromProjectMenu(page, remoteCodexEnvironment, projectId),
+      startThread: async (cwd) =>
+        await startRemoteThreadFromProjectMenu(page, remoteCodexEnvironment, cwd),
       sendImageTurn: async (targetPage, params) =>
         await sendImageTurnThroughGateway(targetPage, remoteCodexEnvironment, params),
       async provision(options = {}) {

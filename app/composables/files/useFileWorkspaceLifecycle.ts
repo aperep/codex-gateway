@@ -11,7 +11,6 @@ const MAX_FILE_WATCH_PATHS = 256;
 
 export function useFileWorkspaceLifecycle(input: {
   hostId: MaybeRefOrGetter<number>;
-  projectId: MaybeRefOrGetter<number | null>;
   threadId: MaybeRefOrGetter<string>;
   rootPath: MaybeRefOrGetter<string>;
   active: MaybeRefOrGetter<boolean>;
@@ -21,10 +20,9 @@ export function useFileWorkspaceLifecycle(input: {
   const auth = useAuthStore();
   auth.hydrate();
   const refreshGitWorkspace = () => {
-    const projectId = toValue(input.projectId);
     const rootPath = toValue(input.rootPath);
-    if (projectId === null || rootPath === "") return Promise.resolve(null);
-    return gitWorkspace.load({ hostId: toValue(input.hostId), projectId, rootPath });
+    if (rootPath === "") return Promise.resolve(null);
+    return gitWorkspace.load({ hostId: toValue(input.hostId), cwd: rootPath, rootPath });
   };
 
   const revalidate = () => {
@@ -38,7 +36,7 @@ export function useFileWorkspaceLifecycle(input: {
 
   useFileWorkspaceWatch({
     hostId: input.hostId,
-    projectId: input.projectId,
+    cwd: input.rootPath,
     threadId: input.threadId,
     active: input.active,
     authenticated: () => auth.isAuthenticated,
@@ -50,16 +48,15 @@ export function useFileWorkspaceLifecycle(input: {
     () =>
       [
         toValue(input.hostId),
-        toValue(input.projectId),
         toValue(input.threadId),
         toValue(input.rootPath),
         auth.isAuthenticated,
       ] as const,
-    async ([hostId, projectId, threadId, rootPath, authenticated]) => {
+    async ([hostId, threadId, rootPath, authenticated]) => {
       if (!rootPath || !authenticated) return;
-      workspace.setScopeRoot({ hostId, projectId, threadId, rootPath });
+      workspace.setScopeRoot({ hostId, threadId, rootPath });
       await workspace.restoreScope(hostId, threadId);
-      if (projectId !== null) await gitWorkspace.load({ hostId, projectId, rootPath });
+      await gitWorkspace.load({ hostId, cwd: rootPath, rootPath });
     },
     { immediate: true },
   );

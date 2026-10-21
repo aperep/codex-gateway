@@ -1,9 +1,9 @@
 import type { Page } from "@playwright/test";
 import { randomUUID } from "node:crypto";
+import { AGENT_OUTPUT_TIMEOUT_MS } from "./helpers/timeouts";
 import { z } from "zod";
 import { expect, test } from "./fixtures/remote-workspace";
 import { authenticatedFetch, openApp, reloadApp } from "./helpers/app";
-import { projectRecordSchema } from "./helpers/http-schemas";
 import { STALE_THREAD_CURSOR_ERROR_CODE } from "../../shared/gateway-errors";
 import { sendRealtimeRawRequest } from "./helpers/realtime";
 import { chatViewportBottomDistance } from "./helpers/scroll";
@@ -21,6 +21,62 @@ import {
   waitForSelectedThreadId,
 } from "./helpers/remote-codex";
 
+test("new threads display and inherit the remote Codex defaults", async ({
+  page,
+  remoteWorkspace,
+}) => {
+  await installRealtimeSocketProbe(page);
+  await openApp(page);
+  const { remote } = remoteWorkspace;
+  const config = await execRemoteSsh(
+    remote,
+    `awk -F ' *= *' '/^model = / { gsub(/"/, "", $2); print "model=" $2 } /^model_reasoning_effort = / { gsub(/"/, "", $2); print "effort=" $2 }' "\${CODEX_HOME:-$HOME/.codex}/config.toml"`,
+  );
+  const parsedConfig: Record<string, string> = {};
+  for (const line of config.stdout.trim().split("\n")) {
+    const separator = line.indexOf("=");
+    if (separator < 1) continue;
+    parsedConfig[line.slice(0, separator)] = line.slice(separator + 1);
+  }
+  const configured = z
+    .object({ model: z.string().min(1), effort: z.string().min(1) })
+    .parse(parsedConfig);
+
+  const { project } = await remoteWorkspace.provision({
+    hostName: `remote-defaults-${Date.now()}`,
+  });
+  await page.getByTestId(`project-button-${project.remotePath}`).click();
+
+  const picker = page.getByTestId("model-select");
+  await expect(picker).not.toContainText(/主机默认|Codex 默认/);
+  await expect(picker).toContainText(effortDisplayLabel(configured.effort));
+  await picker.click();
+  const configuredModelOption = page.getByTestId(`model-option-${configured.model}`);
+  await expect(configuredModelOption).toBeVisible();
+  const configuredModelLabel = (await configuredModelOption.innerText()).trim();
+  await expect(page.getByTestId("model-option-host-default")).toContainText(configuredModelLabel);
+  await expect(page.getByTestId("effort-option-default")).toContainText(
+    effortDisplayLabel(configured.effort),
+  );
+  await page.getByTestId("model-selector-close").click();
+
+  const offset = await realtimeClientMessageCount(page);
+  await page.getByPlaceholder("输入后续修改要求").fill("/");
+  await page.getByTestId("slash-command-new").click();
+  const threadStart = z
+    .object({
+      hostId: z.number(),
+      cwd: z.string(),
+      model: z.string().nullable().optional(),
+      effort: z.string().nullable().optional(),
+    })
+    .loose()
+    .parse(await waitForRealtimeClientMessage(page, "thread.start", offset));
+  expect(threadStart).toMatchObject({ cwd: project.remotePath });
+  expect(threadStart.model).toBeUndefined();
+  expect(threadStart.effort).toBeUndefined();
+});
+
 test("references real project files as structured turn context", async ({
   page,
   remoteWorkspace,
@@ -36,7 +92,7 @@ test("references real project files as structured turn context", async ({
     hostName: `file-reference-host-${Date.now()}`,
     remotePath: projectPath,
   });
-  const threadId = await remoteWorkspace.startThread(project.id);
+  const threadId = await remoteWorkspace.startThread(project.remotePath);
   await expect(page.getByTestId(`thread-button-${threadId}`)).toBeVisible();
   await selectSidebarThread(page, threadId);
 
@@ -135,7 +191,7 @@ test("references real project files as structured turn context", async ({
   await page.getByTestId("send-turn-button").click();
   const message = z
     .object({
-      projectId: z.number(),
+      threadId: z.string(),
       text: z.string(),
       references: z.array(
         z.object({ type: z.literal("file"), path: z.string(), name: z.string() }).strict(),
@@ -143,7 +199,7 @@ test("references real project files as structured turn context", async ({
     })
     .loose()
     .parse(await waitForRealtimeClientMessage(page, "turn.start", messageOffset));
-  expect(message.projectId).toBe(project.id);
+  expect(message.threadId).toBe(threadId);
   expect(message.text).toContain(`@${path}`);
   expect(message.references).toEqual([{ type: "file", path, name: fileName }]);
   expect(JSON.stringify(message)).not.toContain(marker);
@@ -152,7 +208,6 @@ test("references real project files as structured turn context", async ({
     type: "turn.start",
     requestId: randomUUID(),
     hostId: host.id,
-    projectId: project.id,
     threadId,
     text: "invalid reference",
     references: [{ type: "file", path: "../outside.txt", name: "outside.txt" }],
@@ -302,9 +357,9 @@ test("connects to a real SSH Codex host and lists a project thread created by ap
     .parse(await waitForRealtimeClientMessage(page, "turn.start", planTurnOffset));
   expect(planTurnStart.collaborationMode.mode).toBe("plan");
 
-  const threadId = await remoteWorkspace.startThread(project.id);
+  const threadId = await remoteWorkspace.startThread(project.remotePath);
   await expect(page.getByTestId(`thread-button-${threadId}`)).toBeVisible();
-  const secondThreadId = await remoteWorkspace.startThread(project.id);
+  const secondThreadId = await remoteWorkspace.startThread(project.remotePath);
   await expect(page.getByTestId(`thread-button-${secondThreadId}`)).toBeVisible();
 
   const firstDraft = `E2E 草稿一 ${Date.now()}`;
@@ -333,23 +388,22 @@ test("connects to a real SSH Codex host and lists a project thread created by ap
   const recentThread = page.getByTestId(`recent-thread-button-${threadId}`);
   await expect(recentThread).toBeVisible({ timeout: 30_000 });
   await expect(page.getByTestId("chat-scroll-area").getByText(marker)).toBeVisible({
-    timeout: 120_000,
+    timeout: AGENT_OUTPUT_TIMEOUT_MS,
   });
   await expect(page.getByTestId("send-turn-button")).toHaveAttribute("aria-label", "已完成", {
-    timeout: 120_000,
+    timeout: AGENT_OUTPUT_TIMEOUT_MS,
   });
   // This list is page-session activity, not merely a projection of the current
   // running keys. A completed thread remains discoverable until the page reloads.
   await expect(recentThread).toBeVisible();
 
   const staleTurnsResponse = await sendRealtimeRawRequest(page, {
-    type: "thread.turns.load",
+    type: "thread.timeline.load",
     requestId: `e2e-stale-turns-${randomUUID()}`,
     hostId: host.id,
     threadId,
-    cursor: JSON.stringify({ turnId: randomUUID(), includeAnchor: false }),
-    limit: 5,
-    sortDirection: "desc",
+    cursor: "stale-timeline-cursor",
+    limit: 100,
   });
   expect(staleTurnsResponse.type, JSON.stringify(staleTurnsResponse)).toBe("error");
   if (staleTurnsResponse.type !== "error") {
@@ -371,10 +425,10 @@ test("connects to a real SSH Codex host and lists a project thread created by ap
   await page.getByTestId("send-turn-button").click();
   await expect.poll(() => chatViewportBottomDistance(page)).toBeLessThanOrEqual(2);
   await expect(page.getByTestId("chat-scroll-area").getByText(afterReloadMarker)).toBeVisible({
-    timeout: 120_000,
+    timeout: AGENT_OUTPUT_TIMEOUT_MS,
   });
   await expect(page.getByTestId("send-turn-button")).toHaveAttribute("aria-label", "已完成", {
-    timeout: 120_000,
+    timeout: AGENT_OUTPUT_TIMEOUT_MS,
   });
 
   await page.getByTestId(`thread-button-${threadId}`).click({ button: "right" });
@@ -382,7 +436,7 @@ test("connects to a real SSH Codex host and lists a project thread created by ap
   await expect(page.getByTestId(`pinned-thread-button-${threadId}`)).toBeVisible();
 
   await page.getByTestId(`pinned-thread-button-${threadId}`).click();
-  await expect(page.getByTestId(`project-button-${project.id}`)).toBeHidden();
+  await expect(page.getByTestId(`project-button-${project.remotePath}`)).toBeHidden();
   await expect
     .poll(async () =>
       page.getByTestId("chat-scroll-area").evaluate((root) => {
@@ -399,7 +453,7 @@ test("connects to a real SSH Codex host and lists a project thread created by ap
     "data-selected",
     "true",
   );
-  await expect(page.getByTestId(`project-button-${project.id}`)).toBeHidden();
+  await expect(page.getByTestId(`project-button-${project.remotePath}`)).toBeHidden();
   await expect
     .poll(async () =>
       page.getByTestId("chat-scroll-area").evaluate((root) => {
@@ -411,99 +465,7 @@ test("connects to a real SSH Codex host and lists a project thread created by ap
     .toBe(true);
 
   await page.getByTestId(`host-button-${host.id}`).click();
-  await expect(page.getByTestId(`project-button-${project.id}`)).toBeVisible();
-  const updatedProjectPath = `/home/${remote.username}/nested-workdir-${Date.now()}`;
-  await execRemoteSsh(remote, `mkdir -p '${updatedProjectPath}'`);
-  const editProjectResponsePromise = page.waitForResponse(
-    (response) =>
-      response.url().endsWith(`/api/projects/${project.id}`) &&
-      response.request().method() === "PATCH",
-  );
-  await page.getByTestId(`project-button-${project.id}`).click({ button: "right" });
-  await page.getByRole("menuitem", { name: /编辑项目|Edit project/ }).click();
-  await page.getByTestId("project-path-input").fill(updatedProjectPath);
-  await page.getByTestId("add-project-button").click();
-  const editProjectResponse = await editProjectResponsePromise;
-  expect(editProjectResponse.ok(), await editProjectResponse.text()).toBe(true);
-  const editedProject = projectRecordSchema.parse(await editProjectResponse.json());
-  expect(editedProject.remotePath).toBe(updatedProjectPath);
-
-  const deleteProjectResponsePromise = page.waitForResponse(
-    (response) =>
-      response.url().endsWith(`/api/projects/${project.id}`) &&
-      response.request().method() === "DELETE",
-  );
-  await page.getByTestId(`project-button-${project.id}`).click({ button: "right" });
-  await page.getByRole("menuitem", { name: /删除项目|Delete project/ }).click();
-  const deleteProjectResponse = await deleteProjectResponsePromise;
-  expect(deleteProjectResponse.ok(), await deleteProjectResponse.text()).toBe(true);
-  await expect(page.getByTestId(`project-button-${project.id}`)).toBeHidden();
-});
-
-test("groups projects whose remote directories were deleted", async ({ page, remoteWorkspace }) => {
-  const { remote } = remoteWorkspace;
-  await openApp(page);
-
-  const host = await remoteWorkspace.addHost(`missing-project-host-${Date.now()}`);
-  const suffix = Date.now();
-  const availablePath = `/home/${remote.username}/available-project-${suffix}`;
-  const missingPath = `/home/${remote.username}/missing-project-${suffix}`;
-  const recoveredPath = `/home/${remote.username}/recovered-project-${suffix}`;
-  await execRemoteSsh(
-    remote,
-    `mkdir -p '${availablePath}' '${recoveredPath}'; rm -rf '${missingPath}'`,
-  );
-
-  const availableProject = await authenticatedFetch(
-    page,
-    {
-      url: "/api/projects",
-      method: "POST",
-      body: { hostId: host.id, name: "Available Project", remotePath: availablePath },
-    },
-    (value) => projectRecordSchema.parse(value),
-  );
-  const missingProject = await authenticatedFetch(
-    page,
-    {
-      url: "/api/projects",
-      method: "POST",
-      body: { hostId: host.id, name: "Missing Project", remotePath: missingPath },
-    },
-    (value) => projectRecordSchema.parse(value),
-  );
-
-  await reloadApp(page);
-  const missingToggle = page.getByTestId(`missing-projects-toggle-${host.id}`);
-  await expect(missingToggle).toBeVisible({ timeout: 120_000 });
-  await expect(page.getByTestId(`project-button-${availableProject.id}`)).toBeVisible();
-  await expect(page.getByTestId(`project-button-${missingProject.id}`)).toBeHidden();
-
-  await missingToggle.click();
-  const missingProjectButton = page.getByTestId(`project-button-${missingProject.id}`);
-  await expect(missingProjectButton).toBeVisible();
-  await expect(missingProjectButton).toHaveAttribute("data-project-missing", "true");
-  await missingProjectButton.click({ button: "right" });
-  const menu = page
-    .getByRole("menu")
-    .filter({ has: page.getByRole("menuitem", { name: /编辑项目/ }) });
-  await expect(menu.getByRole("menuitem", { name: /编辑项目/ })).toBeVisible();
-  await expect(menu.getByRole("menuitem", { name: /删除项目/ })).toBeVisible();
-  await expect(menu.getByRole("menuitem", { name: /新建/ })).toBeHidden();
-  await menu.getByRole("menuitem", { name: /编辑项目/ }).click();
-
-  const updateResponse = page.waitForResponse(
-    (response) =>
-      response.url().endsWith(`/api/projects/${missingProject.id}`) &&
-      response.request().method() === "PATCH",
-  );
-  await page.getByTestId("project-path-input").fill(recoveredPath);
-  await page.getByTestId("add-project-button").click();
-  expect((await updateResponse).ok()).toBe(true);
-
-  await expect(missingToggle).toBeHidden({ timeout: 30_000 });
-  await expect(missingProjectButton).toBeVisible();
-  await expect(missingProjectButton).toHaveAttribute("data-project-missing", "false");
+  await expect(page.getByTestId(`project-button-${project.remotePath}`)).toBeVisible();
 });
 
 async function verifyRemoteDirectoryBrowser(
@@ -649,4 +611,15 @@ function timestampForRolloutFile(date: Date) {
 
 function shellQuote(value: string) {
   return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
+function effortDisplayLabel(value: string) {
+  const labels: Record<string, string> = {
+    low: "Light",
+    light: "Light",
+    medium: "Medium",
+    high: "High",
+    xhigh: "Extra High",
+  };
+  return labels[value] ?? value;
 }

@@ -1,6 +1,6 @@
 import type { ThreadResponseUsage, ThreadTimelineItem, ThreadTimelineTurn } from "~~/shared/types";
 import type { DisplayedTurnTiming } from "@/utils/turn-timing";
-import { itemKey, userMessageVariant, type ThreadTurnSections } from "./thread-turn-sections";
+import { itemKey, type ThreadTurnSections } from "./thread-turn-sections";
 
 export type { ThreadTimelineTurn } from "~~/shared/types";
 
@@ -15,6 +15,7 @@ const estimatedItemHeights: Partial<Record<ThreadTimelineItem["type"], number>> 
 };
 
 export type ThreadTimelineRow =
+  | { key: string; type: "loadMore"; turnId: string; loading: boolean }
   | {
       key: string;
       type: "intermediateHeader";
@@ -29,7 +30,6 @@ export type ThreadTimelineRow =
       turnId: string;
       section: ThreadTimelineItemSection;
       item: ThreadTimelineItem;
-      userMessageVariant: "normal" | "steer";
       turnTiming: DisplayedTurnTiming | null;
       responseUsage: ThreadResponseUsage[] | undefined;
       agentActionsAvailable: boolean;
@@ -64,41 +64,26 @@ export function buildThreadTimelineRows(input: {
     const rows: ThreadTimelineRow[] = [];
     const timing = displayedTurnTiming(turn);
     const timingTarget = sections.finalItems.findLast((item) => item.type === "agentMessage");
-    appendItemRows(rows, input.threadId, turn.id, "user", sections.userItems, sections);
-
-    if (sections.intermediateItems.length || turn.itemsView !== "full") {
-      rows.push({
-        key: `${input.threadId}:turn-${turn.id}:intermediate-header`,
-        type: "intermediateHeader",
-        turnId: turn.id,
-        count: sections.intermediateItems.length,
-        open: intermediateOpen,
-        loading: intermediateLoading,
-      });
-      if (intermediateOpen) {
-        appendItemRows(
-          rows,
-          input.threadId,
-          turn.id,
-          "intermediate",
-          sections.intermediateItems,
-          sections,
-        );
-      }
-    }
-
-    appendItemRows(
+    appendTurnItemsInOrder({
       rows,
-      input.threadId,
-      turn.id,
-      "final",
-      sections.finalItems,
+      threadId: input.threadId,
+      turn,
       sections,
+      intermediateOpen,
+      intermediateLoading,
       timingTarget,
       timing,
-      input.agentActionsAvailable,
-      turn.responseUsage,
-    );
+      agentActionsAvailable: input.agentActionsAvailable,
+    });
+    if (intermediateOpen && typeof turn.olderItemsCursor === "string") {
+      const header = rows.findIndex((row) => row.type === "intermediateHeader");
+      rows.splice(header + 1, 0, {
+        key: `${input.threadId}:turn-${turn.id}:load-more`,
+        type: "loadMore",
+        turnId: turn.id,
+        loading: intermediateLoading,
+      });
+    }
     // Completed turns normally render timing beside the final answer's copy action. Keep a
     // standalone row only for interrupted/error turns that never produced an Agent answer.
     if (
@@ -118,6 +103,72 @@ export function buildThreadTimelineRows(input: {
   });
 }
 
+function appendTurnItemsInOrder(input: {
+  rows: ThreadTimelineRow[];
+  threadId: string | null;
+  turn: ThreadTimelineTurn;
+  sections: ThreadTurnSections;
+  intermediateOpen: boolean;
+  intermediateLoading: boolean;
+  timingTarget: ThreadTimelineItem | undefined;
+  timing: DisplayedTurnTiming;
+  agentActionsAvailable: boolean;
+}) {
+  const { rows, threadId, turn, sections } = input;
+  const intermediateItems = new Set(sections.intermediateItems);
+  const finalItems = new Set(sections.finalItems);
+  let intermediateHeaderAdded = false;
+
+  // The shared history reducer owns protocol race normalization. Rendering must preserve that
+  // canonical order verbatim; a second presentation sort would make live events, cached history,
+  // and other consumers disagree about the same Turn.
+  sections.items.forEach((item) => {
+    const isFinal = finalItems.has(item);
+    const isIntermediate = intermediateItems.has(item) && !isFinal;
+    const needsUnloadedIntermediateHeader = isFinal && turn.itemsView !== "full";
+    if (!intermediateHeaderAdded && (isIntermediate || needsUnloadedIntermediateHeader)) {
+      rows.push({
+        key: `${threadId}:turn-${turn.id}:intermediate-header`,
+        type: "intermediateHeader",
+        turnId: turn.id,
+        count: sections.intermediateItems.length,
+        open: input.intermediateOpen,
+        loading: input.intermediateLoading,
+      });
+      intermediateHeaderAdded = true;
+    }
+    if (isIntermediate && !input.intermediateOpen) return;
+
+    const section = isIntermediate ? "intermediate" : isFinal ? "final" : "user";
+    appendItemRows(
+      rows,
+      threadId,
+      turn.id,
+      section,
+      [item],
+      sections,
+      item === input.timingTarget ? item : undefined,
+      item === input.timingTarget ? input.timing : null,
+      item === input.timingTarget && input.agentActionsAvailable,
+      item === input.timingTarget ? turn.responseUsage : undefined,
+    );
+  });
+
+  // An active summary can temporarily contain only its lead message. In that case the lazy-load
+  // control still belongs at this turn's tail; once a final answer arrives, the branch above moves
+  // it before that answer without changing the canonical app-server item order.
+  if (!intermediateHeaderAdded && turn.itemsView !== "full") {
+    rows.push({
+      key: `${threadId}:turn-${turn.id}:intermediate-header`,
+      type: "intermediateHeader",
+      turnId: turn.id,
+      count: sections.intermediateItems.length,
+      open: input.intermediateOpen,
+      loading: input.intermediateLoading,
+    });
+  }
+}
+
 export function reuseUnchangedTimelineRows(
   previous: ThreadTimelineRow[] | undefined,
   next: ThreadTimelineRow[],
@@ -132,7 +183,7 @@ export function reuseUnchangedTimelineRows(
 
 export function estimateThreadTimelineRow(row: ThreadTimelineRow | undefined) {
   if (row === undefined) return 96;
-  if (row.type === "intermediateHeader") return 48;
+  if (row.type === "intermediateHeader" || row.type === "loadMore") return 48;
   if (row.type === "turnDuration") return 28;
   return estimatedItemHeights[row.item.type] ?? 96;
 }
@@ -156,7 +207,6 @@ function appendItemRows(
       turnId,
       section,
       item,
-      userMessageVariant: userMessageVariant(item, sections),
       turnTiming: item === timingTarget ? timing : null,
       responseUsage: item === timingTarget ? responseUsage : undefined,
       agentActionsAvailable: item === timingTarget && agentActionsAvailable,
@@ -179,6 +229,9 @@ function hasTimingValue(timing: DisplayedTurnTiming) {
 
 function sameTimelineRow(left: ThreadTimelineRow, right: ThreadTimelineRow) {
   if (left.type !== right.type) return false;
+  if (left.type === "loadMore" && right.type === "loadMore") {
+    return left.turnId === right.turnId && left.loading === right.loading;
+  }
   if (left.type === "intermediateHeader" && right.type === "intermediateHeader") {
     return (
       left.count === right.count &&
@@ -196,7 +249,6 @@ function sameTimelineRow(left: ThreadTimelineRow, right: ThreadTimelineRow) {
       left.item === right.item &&
       left.turnId === right.turnId &&
       left.section === right.section &&
-      left.userMessageVariant === right.userMessageVariant &&
       left.agentActionsAvailable === right.agentActionsAvailable &&
       sameResponseUsage(left.responseUsage, right.responseUsage) &&
       sameTurnTiming(left.turnTiming, right.turnTiming)

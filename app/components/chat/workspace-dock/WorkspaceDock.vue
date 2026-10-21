@@ -26,7 +26,7 @@ const { isDark } = useTerminalTheme();
 const scopeKey = computed(() =>
   workspaceLayoutScopeKey(
     workspace.selectedHostId.value,
-    workspace.selectedProjectId.value,
+    workspace.selectedCwd.value,
     workspace.selectedThreadId.value,
   ),
 );
@@ -40,7 +40,7 @@ const {
   fileWorkspaceRoot,
 } = useWorkspacePanels({
   selectedHostId: workspace.selectedHostId,
-  selectedProjectId: workspace.selectedProjectId,
+  selectedCwd: workspace.selectedCwd,
   selectedThreadId: workspace.selectedThreadId,
 });
 const panels = useWorkspaceDockPanels({
@@ -83,7 +83,7 @@ const dockTheme = computed(() => (isDark.value ? themeDark : themeLight));
 provide(WORKSPACE_FILES_PANEL_CONTEXT, {
   layout: refs.layout,
   selectedThreadId: workspace.selectedThreadId,
-  selectedProjectId: workspace.selectedProjectId,
+  selectedCwd: workspace.selectedCwd,
   selectedHostId: workspace.selectedHostId,
   rootPath: fileWorkspaceRoot,
 });
@@ -131,9 +131,18 @@ function tabContextMenu({ panel, api }: GetTabContextMenuItemsParams) {
       lets a restored grid contribute its stale intrinsic height during a keyed thread switch,
       which can shorten the whole workspace even though every panel agrees with its host.
     -->
+    <!-- Core already provides tab-strip arrow navigation and ARIA semantics. The optional
+         keyboardNavigation keymap requires dockview-enterprise and its licensed module; do not
+         enable an unregistered enterprise feature in this community Dockview installation. -->
+    <!-- Dockview core defaults proportionalLayout to true, but the Vue wrapper casts an omitted
+         Boolean prop to false. Pass it explicitly here so live monitor/window resizing and JSON
+         restoration preserve split ratios. Keep the official serialized grid dimensions: core
+         uses them to scale the saved layout; a second percentage schema or resize observer would
+         duplicate that responsibility and compete with Dockview's own ResizeObserver. -->
     <div ref="dockviewHost" class="gateway-dockview h-0 min-h-0 w-full flex-1 overflow-hidden">
       <DockviewVue
         class="h-full w-full"
+        :proportional-layout="true"
         :right-header-actions-component="
           layout === 'desktop' ? 'WorkspaceDockGroupActions' : undefined
         "
@@ -141,7 +150,6 @@ function tabContextMenu({ panel, api }: GetTabContextMenuItemsParams) {
         floating-group-bounds="boundedWithinViewport"
         :disable-floating-groups="layout === 'mobile'"
         :locked="layout === 'mobile'"
-        :keyboard-navigation="true"
         :get-tab-context-menu-items="layout === 'desktop' ? tabContextMenu : undefined"
         @ready="lifecycle.ready"
       />

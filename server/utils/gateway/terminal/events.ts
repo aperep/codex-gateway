@@ -1,10 +1,8 @@
 export type TerminalEvent =
   | {
-      type: "terminal.output";
+      type: "terminal.output.binary";
       sessionId: string;
-      data: string;
-      seq: number;
-      createdAt: string;
+      frame: Uint8Array;
     }
   | {
       type: "terminal.exited";

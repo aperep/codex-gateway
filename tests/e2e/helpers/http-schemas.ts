@@ -20,7 +20,6 @@ export const hostRecordSchema = z
 
 export const projectRecordSchema = z
   .object({
-    id: z.number().int().positive(),
     hostId: z.number().int().positive(),
     name: z.string().min(1),
     remotePath: z.string().min(1),

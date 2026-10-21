@@ -1,4 +1,4 @@
-import type { Page } from "@playwright/test";
+import { devices, type Page } from "@playwright/test";
 import { expect, test } from "./fixtures/remote-workspace";
 import { openApp, reloadApp } from "./helpers/app";
 import { chatViewportBottomDistance, revealVirtualizedChatLocator } from "./helpers/scroll";
@@ -11,14 +11,131 @@ import {
   waitForRealtimeClientMessage,
 } from "./helpers/realtime-socket-probe";
 import { sendSteerText, sendTextTurn } from "./helpers/remote-codex";
+import { AGENT_OUTPUT_TIMEOUT_MS } from "./helpers/timeouts";
 
 test.describe.configure({ mode: "serial" });
+
+test("opens a running conversation in a fresh mobile browser and receives its live completion", async ({
+  browser,
+  page,
+  remoteWorkspace,
+}) => {
+  test.setTimeout(6 * 60_000);
+  await openApp(page, { interceptRealtime: false });
+  const { project } = await remoteWorkspace.provision();
+  await remoteWorkspace.startThread(project.remotePath);
+  const marker = `mobile-live-${Date.now()}`;
+  await page
+    .getByPlaceholder("输入后续修改要求")
+    .fill(
+      [
+        `执行下面的命令，然后只回复 ${marker}。不要读取输出文件。`,
+        `head -c 300000 /dev/zero | tr '\\0' x; printf '\\n${marker}-tail\\n'; sleep 45`,
+      ].join("\n"),
+    );
+  await page.getByTestId("send-turn-button").click();
+  await expect(page.getByTestId("command-status-running")).toBeVisible({
+    timeout: AGENT_OUTPUT_TIMEOUT_MS,
+  });
+  const mobileContext = await browser.newContext({
+    ...devices["Pixel 5"],
+    storageState: await page.context().storageState(),
+  });
+  const mobilePage = await mobileContext.newPage();
+  try {
+    // A fresh mobile page restores the real URL/thread and opens a warm server snapshot. No fake
+    // history or WebSocket injection: the source page's real command is still running remotely.
+    await openApp(mobilePage, { resetConfig: false, interceptRealtime: false });
+    await expect(mobilePage.getByTestId("mobile-layout")).toBeVisible();
+    await expect(mobilePage.getByTestId("command-status-running")).toBeVisible();
+    // Completion must arrive without clicking intermediate history or refreshing the page.
+    await expect(
+      mobilePage.getByTestId("chat-scroll-area").getByText(marker, { exact: true }),
+    ).toBeVisible({ timeout: AGENT_OUTPUT_TIMEOUT_MS });
+    await expect(mobilePage.getByTestId("send-turn-button")).toHaveAttribute(
+      "aria-label",
+      "已完成",
+      {
+        timeout: AGENT_OUTPUT_TIMEOUT_MS,
+      },
+    );
+    // App Server can buffer stdout until the tool yields. Inspect output after completion rather
+    // than requiring an output delta while the remote sleep is still running.
+    const toggle = firstIntermediateStepsToggle(mobilePage);
+    await revealVirtualizedChatLocator(mobilePage, toggle);
+    if ((await toggle.getAttribute("data-state")) === "closed") await toggle.click();
+    const command = mobilePage
+      .locator("[data-row-key]")
+      .filter({
+        has: mobilePage.getByTestId("command-status-completed"),
+        hasText: "head -c 300000",
+      })
+      .last();
+    await revealVirtualizedChatLocator(mobilePage, command);
+    await command.getByRole("button").first().click();
+    await expect(command.locator("pre")).toContainText(`${marker}-tail`);
+    await reloadApp(mobilePage);
+    await expect(
+      mobilePage.getByTestId("chat-scroll-area").getByText(marker, { exact: true }),
+    ).toBeVisible();
+  } finally {
+    await mobileContext.close();
+  }
+});
+
+test("refreshes thread settings after a disconnected browser reconnects", async ({
+  browser,
+  page,
+  remoteWorkspace,
+}) => {
+  test.setTimeout(4 * 60_000);
+  await installRealtimeSocketProbe(page);
+  await openApp(page);
+  await expect.poll(() => activeRealtimeSocketCount(page), { timeout: 10_000 }).toBe(1);
+  const { project } = await remoteWorkspace.provision({
+    hostName: `settings-reconnect-${Date.now()}`,
+  });
+  const threadId = await remoteWorkspace.startThread(project.remotePath);
+  await expect(page.getByTestId("model-select")).toContainText(/gpt-6-luna/i);
+
+  const secondContext = await browser.newContext({
+    storageState: await page.context().storageState(),
+  });
+  const secondPage = await secondContext.newPage();
+  await installRealtimeSocketProbe(secondPage);
+  try {
+    await openApp(secondPage, { resetConfig: false });
+    await expect
+      .poll(async () => currentSelectedThreadId(secondPage), { timeout: 30_000 })
+      .toBe(threadId);
+    await expect(secondPage.getByTestId("model-select")).toContainText(/gpt-6-luna/i);
+
+    await page.getByTestId("model-select").click();
+    await page.getByTestId("model-option-gpt-5.6-sol").click();
+    await page.getByTestId("model-selector-close").click();
+    await expect(page.getByTestId("model-select")).toContainText(/gpt-5\.6-sol/i);
+
+    // Model changes made in another client must be recovered when a user returns to a background
+    // tab, not only after its WebSocket reconnects.
+    await triggerRealtimeResume(secondPage);
+    await expect(secondPage.getByTestId("model-select")).toContainText(/gpt-5\.6-sol/i);
+
+    const reconnectMessageOffset = await realtimeClientMessageCount(secondPage);
+    await closeRealtimeSockets(secondPage);
+    await expect.poll(() => activeRealtimeSocketCount(secondPage), { timeout: 30_000 }).toBe(1);
+    await waitForRealtimeClientMessage(secondPage, "thread.subscribe", reconnectMessageOffset);
+    await expect(secondPage.getByTestId("model-select")).toContainText(/gpt-5\.6-sol/i);
+  } finally {
+    await secondContext.close();
+  }
+});
 
 test("fans out a real remote app-server thread to multiple browser clients across turns", async ({
   browser,
   page,
   remoteWorkspace,
 }) => {
+  test.setTimeout(12 * 60_000);
   const { remote } = remoteWorkspace;
   await installRealtimeSocketProbe(page);
 
@@ -32,20 +149,15 @@ test("fans out a real remote app-server thread to multiple browser clients acros
 
   const { host, project } = await remoteWorkspace.provision();
   await expect(page.getByTestId("project-thread-list")).toBeVisible();
-  const threadId = await remoteWorkspace.startThread(project.id);
+  const threadId = await remoteWorkspace.startThread(project.remotePath);
 
   const firstMarker = `E2E 第一轮 ${Date.now()}`;
   await page
     .getByPlaceholder("输入后续修改要求")
     .fill(
       [
-        `请执行一个较长命令，然后最终用一句话回复：${firstMarker}`,
-        "运行 python - <<'PY'",
-        "import time",
-        `print('${firstMarker}')`,
-        "time.sleep(12)",
-        "print('first turn sleep finished')",
-        "PY",
+        `请执行一个较长命令，然后最终只回复这个标记：${firstMarker}`,
+        "运行 sleep 12; printf 'first turn sleep finished\\n'",
       ].join("\n"),
     );
   await page.getByTestId("send-turn-button").click();
@@ -55,35 +167,84 @@ test("fans out a real remote app-server thread to multiple browser clients acros
     page.getByTestId(`thread-button-${threadId}`).locator(".animate-spin"),
   ).toBeVisible();
   await expect.poll(async () => activeRemoteTurnId(page), { timeout: 30_000 }).not.toBe("");
+  // A started turn only proves that App Server accepted the prompt. Wait until the real command is
+  // running before steering so model queue time cannot consume the command-completion deadline or
+  // let the user's own marker text satisfy the later Agent-response assertion.
+  await expect
+    .poll(() => inProgressCommandCount(page), { timeout: AGENT_OUTPUT_TIMEOUT_MS })
+    .toBeGreaterThan(0);
+  const firstTurnId = await activeRemoteTurnId(page);
   const steerMarker = `E2E steer ${Date.now()}`;
+  const steerDisplayText = `追加要求：${steerMarker}`;
   const steerMessageOffset = await realtimeClientMessageCount(page);
+  const processToggle = firstIntermediateStepsToggle(page);
+  await revealVirtualizedChatLocator(page, processToggle);
+  await expect(processToggle).toHaveAttribute("data-state", "open");
+  // Observe the real disclosure while the user sends steer. A final-state assertion alone misses
+  // a brief automatic close that the next Agent item reopens; do not manually reopen to mask it.
+  const disclosure = await page.evaluateHandle(
+    ({ hostId, threadId, turnId }) => {
+      const root = document.querySelector('[data-testid="chat-scroll-area"]');
+      if (root === null) throw new Error("Missing chat timeline");
+      let unexpectedClosures = 0;
+      const observer = new MutationObserver(() => {
+        if (window.__codexGatewayE2e?.runtime.statusFor(hostId, threadId) !== "running") return;
+        const row = Array.from(root.querySelectorAll<HTMLElement>("[data-row-key]")).find(
+          (element) =>
+            element.dataset.rowKey?.endsWith(`:turn-${turnId}:intermediate-header`) ?? false,
+        );
+        if ((row?.querySelector('button[data-state="closed"]') ?? null) !== null) {
+          unexpectedClosures += 1;
+        }
+      });
+      observer.observe(root, { subtree: true, childList: true, attributes: true });
+      return {
+        stop() {
+          observer.disconnect();
+          return unexpectedClosures;
+        },
+      };
+    },
+    { hostId: host.id, threadId, turnId: await activeRemoteTurnId(page) },
+  );
   await sendSteerText(page, steerMarker);
   const steerMessage = await waitForRealtimeClientMessage(page, "turn.steer", steerMessageOffset);
   expect(steerMessage.threadId).toBe(threadId);
   expect(steerMessage.text).toContain(steerMarker);
   await expect(
-    page
-      .getByTestId("chat-scroll-area")
-      .getByTestId("steered-conversation-item")
-      .getByText(steerMarker),
-  ).toBeVisible({ timeout: 30_000 });
-  await expect(page.getByTestId("chat-scroll-area").getByText(firstMarker)).toBeVisible({
-    timeout: 120_000,
+    page.getByTestId("chat-scroll-area").getByText(steerDisplayText, { exact: true }),
+  ).toBeVisible({
+    timeout: 30_000,
   });
-  const processToggle = firstIntermediateStepsToggle(page);
-  if (
-    (await processToggle.isVisible().catch(() => false)) &&
-    (await processToggle.getAttribute("data-state")) !== "open"
-  ) {
-    await processToggle.click();
-    await expect(processToggle).toHaveAttribute("data-state", "open");
-  }
+  expect(await disclosure.evaluate((state) => state.stop())).toBe(0);
+  await disclosure.dispose();
   await expect(page.getByTestId("send-turn-button")).toHaveAttribute("aria-label", "已完成", {
-    timeout: 120_000,
+    timeout: AGENT_OUTPUT_TIMEOUT_MS,
   });
   await expect(page.getByTestId(`thread-button-${threadId}`).getByLabel("已完成")).toBeVisible();
   await expect(page.getByText("加载回合内容失败")).toHaveCount(0);
+  const firstReply = page
+    .locator(`[data-row-key*="turn-${firstTurnId}:final:"] .markdown-content`)
+    .first();
+  await revealVirtualizedChatLocator(page, firstReply);
+  await expect(firstReply).not.toBeEmpty();
+  // Steer can legitimately change the reply requested by the first prompt. Compare the actual
+  // completed answer before/after eviction rather than prescribing the model's earlier marker.
+  const firstReplyText = await firstReply.innerText();
   await revealVirtualizedChatLocator(page, firstIntermediateStepsToggle(page));
+  // Inspect the command the user requested. Upstream can legitimately return encrypted reasoning
+  // with an empty summary, so requiring reasoning prose makes realtime coverage model-dependent.
+  // A short command can finish and auto-collapse before assertions about streaming text run.
+  if ((await firstIntermediateStepsToggle(page).getAttribute("data-state")) === "closed") {
+    await firstIntermediateStepsToggle(page).click();
+  }
+  const firstCommand = page
+    .locator(`[data-row-key*="turn-${firstTurnId}:intermediate:"]`)
+    .filter({ has: page.getByTestId("command-status-completed"), hasText: "sleep 12" })
+    .first();
+  await revealVirtualizedChatLocator(page, firstCommand);
+  await firstCommand.getByRole("button").first().click();
+  await expect(firstCommand.locator("pre")).toContainText("first turn sleep finished");
   // This scenario owns realtime reconnection and cross-browser fanout. Whether completion
   // auto-collapses is intentionally covered by the scroll suite because it depends on whether the
   // reader is still bottom-pinned. Close it through the same control a user uses before checking
@@ -107,17 +268,14 @@ test("fans out a real remote app-server thread to multiple browser clients acros
   expect(reconnectSubscription.threadId).toBe(threadId);
   expect(reconnectSubscription.afterEpoch).toEqual(expect.any(String));
   await expect(page.getByTestId("send-turn-button")).toHaveAttribute("aria-label", "已完成", {
-    timeout: 120_000,
+    timeout: AGENT_OUTPUT_TIMEOUT_MS,
   });
   await expect(page.getByTestId(`thread-button-${threadId}`).getByLabel("已完成")).toBeVisible();
   await revealVirtualizedChatLocator(page, firstIntermediateStepsToggle(page));
   await firstIntermediateStepsToggle(page).click();
   await revealVirtualizedChatLocator(
     page,
-    page
-      .getByTestId("chat-scroll-area")
-      .getByTestId("steered-conversation-item")
-      .getByText(steerMarker),
+    page.getByTestId("chat-scroll-area").getByText(steerDisplayText, { exact: true }),
   );
   await reloadApp(page);
   await revealVirtualizedChatLocator(page, firstIntermediateStepsToggle(page));
@@ -125,13 +283,10 @@ test("fans out a real remote app-server thread to multiple browser clients acros
   await firstIntermediateStepsToggle(page).click();
   await revealVirtualizedChatLocator(
     page,
-    page
-      .getByTestId("chat-scroll-area")
-      .getByTestId("steered-conversation-item")
-      .getByText(steerMarker),
+    page.getByTestId("chat-scroll-area").getByText(steerDisplayText, { exact: true }),
   );
 
-  const backgroundThreadId = await remoteWorkspace.startThread(project.id);
+  const backgroundThreadId = await remoteWorkspace.startThread(project.remotePath);
   // startThread resolves from the App Server response before Vue has necessarily committed the
   // route and browser-local last-open selection. Capture storage only after the user-visible
   // selection has settled, otherwise the second browser can legitimately restore the prior tab.
@@ -141,7 +296,7 @@ test("fans out a real remote app-server thread to multiple browser clients acros
   const secondContext = await browser.newContext({
     storageState: await page.context().storageState(),
   });
-  await openThreadFromProjectOrRestoredState(page, project.id, threadId);
+  await openThreadFromProjectOrRestoredState(page, host.id, project.remotePath, threadId);
   const secondPage = await secondContext.newPage();
   let remoteImageRequestCount = 0;
   secondPage.on("request", (request) => {
@@ -156,7 +311,12 @@ test("fans out a real remote app-server thread to multiple browser clients acros
     // This scenario verifies cross-browser runtime fanout, not last-open restoration. Select the
     // background thread through the same project-tree action a user performs so the assertion does
     // not depend on which tab last wrote browser-local navigation while the new page was starting.
-    await openThreadFromProjectOrRestoredState(secondPage, project.id, backgroundThreadId);
+    await openThreadFromProjectOrRestoredState(
+      secondPage,
+      host.id,
+      project.remotePath,
+      backgroundThreadId,
+    );
     await expect
       .poll(async () => currentSelectedThreadId(secondPage), { timeout: 30_000 })
       .toBe(backgroundThreadId);
@@ -181,17 +341,17 @@ test("fans out a real remote app-server thread to multiple browser clients acros
       .poll(() => threadRuntimeStatus(secondPage, host.id, threadId), { timeout: 30_000 })
       .toBe("running");
     await expect(page.getByTestId("send-turn-button")).toHaveAttribute("aria-label", "已完成", {
-      timeout: 120_000,
+      timeout: AGENT_OUTPUT_TIMEOUT_MS,
     });
     await expect
       .poll(() => threadRuntimeStatus(secondPage, host.id, threadId), { timeout: 30_000 })
       .toBe("completed");
 
-    await openThreadFromProjectOrRestoredState(secondPage, project.id, threadId);
+    await openThreadFromProjectOrRestoredState(secondPage, host.id, project.remotePath, threadId);
     await expect(secondPage.getByPlaceholder("输入后续修改要求")).toBeEnabled();
     await expect
       .poll(async () => secondPage.getByTestId("chat-scroll-area").getByText(firstMarker).count(), {
-        timeout: 120_000,
+        timeout: AGENT_OUTPUT_TIMEOUT_MS,
       })
       .toBeGreaterThan(0);
     await secondPage.getByTestId("chat-scroll-area").evaluate((root) => {
@@ -209,6 +369,86 @@ test("fans out a real remote app-server thread to multiple browser clients acros
         { timeout: 5_000 },
       )
       .toBe(true);
+
+    const crossBrowserSteerMarker = `E2E 跨浏览器 steer ${Date.now()}`;
+    await page
+      .getByPlaceholder("输入后续修改要求")
+      .fill(
+        [
+          `请等待另一页面追加要求后回复：${crossBrowserSteerMarker}`,
+          "运行 sleep 12; printf 'cross-browser steer ready\\n'",
+        ].join("\n"),
+      );
+    await page.getByTestId("send-turn-button").click();
+    await expect
+      .poll(() => inProgressCommandCount(page), { timeout: AGENT_OUTPUT_TIMEOUT_MS })
+      .toBeGreaterThan(0);
+    await expect
+      .poll(() => threadRuntimeStatus(secondPage, host.id, threadId), { timeout: 30_000 })
+      .toBe("running");
+    const steerMessageOffset = await realtimeClientMessageCount(secondPage);
+    await sendSteerText(secondPage, crossBrowserSteerMarker);
+    const steerMessage = await waitForRealtimeClientMessage(
+      secondPage,
+      "turn.steer",
+      steerMessageOffset,
+    );
+    expect(steerMessage.threadId).toBe(threadId);
+    expect(steerMessage.text).toContain(crossBrowserSteerMarker);
+    const mirroredSteer = page
+      .getByTestId("chat-scroll-area")
+      .getByText(`追加要求：${crossBrowserSteerMarker}`, { exact: true });
+    // App Server may emit more Agent items before it fans out the accepted steer. The contract is
+    // eventual visibility before the active Turn settles, without opening intermediate history.
+    await expect(secondPage.getByTestId("send-turn-button")).toHaveAttribute(
+      "aria-label",
+      "已完成",
+      {
+        timeout: AGENT_OUTPUT_TIMEOUT_MS,
+      },
+    );
+    await expect
+      .poll(() => threadRuntimeStatus(page, host.id, threadId), {
+        timeout: AGENT_OUTPUT_TIMEOUT_MS,
+      })
+      .toBe("completed");
+    await expect(mirroredSteer).toBeVisible({ timeout: 30_000 });
+    await openThreadFromProjectOrRestoredState(
+      page,
+      host.id,
+      project.remotePath,
+      backgroundThreadId,
+    );
+    await openThreadFromProjectOrRestoredState(page, host.id, project.remotePath, threadId);
+    await expect(mirroredSteer).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByTestId("send-turn-button")).toHaveAttribute("aria-label", "已完成", {
+      timeout: AGENT_OUTPUT_TIMEOUT_MS,
+    });
+
+    // Keep both browsers on the same idle conversation, then start the next Turn through the
+    // composer. The receiving browser must show its user row without opening intermediate history
+    // or switching routes; steer coverage alone cannot detect an upstream unsubscribe at idle.
+    await expect
+      .poll(async () => activeRemoteTurnId(secondPage), { timeout: AGENT_OUTPUT_TIMEOUT_MS })
+      .toBe("");
+    const nextTurnMarker = `E2E idle-to-next-turn ${Date.now()}`;
+    const nextTurnPrompt = `请只回复：${nextTurnMarker}`;
+    await secondPage.getByPlaceholder("输入后续修改要求").fill(nextTurnPrompt);
+    await secondPage.getByTestId("send-turn-button").click();
+    await expect(
+      page.getByTestId("chat-scroll-area").getByText(nextTurnPrompt, { exact: true }),
+    ).toBeVisible({ timeout: 30_000 });
+    await expect(
+      secondPage.getByTestId("chat-scroll-area").getByText(nextTurnMarker, { exact: true }),
+    ).toBeVisible({ timeout: AGENT_OUTPUT_TIMEOUT_MS });
+    await expect(secondPage.getByTestId("send-turn-button")).toHaveAttribute(
+      "aria-label",
+      "已完成",
+      { timeout: AGENT_OUTPUT_TIMEOUT_MS },
+    );
+    await expect
+      .poll(async () => activeRemoteTurnId(page), { timeout: AGENT_OUTPUT_TIMEOUT_MS })
+      .toBe("");
 
     await page.getByTestId(`thread-button-${threadId}`).click({ button: "right" });
     await page.getByRole("menuitem", { name: /置顶会话|Pin thread/ }).click();
@@ -232,36 +472,47 @@ test("fans out a real remote app-server thread to multiple browser clients acros
       imagePath: remote.imagePath,
       marker: secondMarker,
     });
+    const mirroredUserMessage = page
+      .getByTestId("chat-scroll-area")
+      .getByText(`回复：${secondMarker}`, { exact: true });
+    await expect(mirroredUserMessage).toBeVisible({ timeout: AGENT_OUTPUT_TIMEOUT_MS });
     // The submitted user text includes the instruction prefix, while the requested one-line Agent
     // response is the marker itself. Match the exact response so this assertion cannot pass by
     // finding the user's own message and then fail on another peer that rendered the real reply.
     const secondReply = secondPage
       .getByTestId("chat-scroll-area")
       .getByText(secondMarker, { exact: true });
-    await expect(secondReply).toBeVisible({ timeout: 120_000 });
+    await expect(secondReply).toBeVisible({ timeout: AGENT_OUTPUT_TIMEOUT_MS });
     // The response text can arrive before app-server emits turn/completed. Waiting on the page
     // that started the turn prevents the other client from satisfying "已完成" with the previous
     // turn's state before its queued turn/started event has been projected.
     await expect(secondPage.getByTestId("send-turn-button")).toHaveAttribute(
       "aria-label",
       "已完成",
-      { timeout: 120_000 },
+      { timeout: AGENT_OUTPUT_TIMEOUT_MS },
     );
     await expect(page.getByTestId("send-turn-button")).toHaveAttribute("aria-label", "已完成", {
-      timeout: 120_000,
+      timeout: AGENT_OUTPUT_TIMEOUT_MS,
     });
     // Assistant text and a transient completed button can precede app-server's terminal turn event.
     // Starting the interrupt case before the authoritative active turn clears legitimately sends
     // turn.steer and tests a different operation. Wait on runtime identity rather than adding a
     // sleep or weakening the protocol assertion below.
-    await expect.poll(async () => activeRemoteTurnId(page), { timeout: 120_000 }).toBe("");
+    await expect
+      .poll(async () => activeRemoteTurnId(page), { timeout: AGENT_OUTPUT_TIMEOUT_MS })
+      .toBe("");
     const imageAttachment = secondPage.getByTestId("thread-image-attachment").last();
     await revealVirtualizedChatLocator(secondPage, imageAttachment);
     await expect(imageAttachment.locator("img")).toHaveAttribute("src", /^blob:/);
     await expect.poll(() => remoteImageRequestCount).toBe(1);
 
-    await openThreadFromProjectOrRestoredState(secondPage, project.id, backgroundThreadId);
-    await openThreadFromProjectOrRestoredState(secondPage, project.id, threadId);
+    await openThreadFromProjectOrRestoredState(
+      secondPage,
+      host.id,
+      project.remotePath,
+      backgroundThreadId,
+    );
+    await openThreadFromProjectOrRestoredState(secondPage, host.id, project.remotePath, threadId);
     await revealVirtualizedChatLocator(secondPage, imageAttachment);
     await expect(imageAttachment.locator("img")).toHaveAttribute("src", /^blob:/);
     // Timeline virtualization intentionally destroys off-thread image DOM. The page-level Blob
@@ -273,6 +524,33 @@ test("fans out a real remote app-server thread to multiple browser clients acros
     );
     expect(await activeRealtimeSocketCount(page)).toBe(1);
     expect(await activeRealtimeSocketCount(secondPage)).toBe(1);
+
+    // This existing real conversation now has six user Turns. The oldest collapsed tools should
+    // have left Pinia, not merely the virtual DOM. Reopening fetches the official history again;
+    // closing releases it immediately without losing its user message or final answer.
+    const cachedFirstTurnCommandCount = () =>
+      page.evaluate(
+        (turnId) =>
+          window.__codexGatewayE2e?.views.history?.thread.turns
+            .find((turn) => turn.id === turnId)
+            ?.items.filter((item) => item.type === "commandExecution").length,
+        firstTurnId,
+      );
+    await expect.poll(cachedFirstTurnCommandCount).toBe(0);
+    const oldToggle = page.locator(
+      `[data-row-key$=":turn-${firstTurnId}:intermediate-header"] button`,
+    );
+    await revealVirtualizedChatLocator(page, oldToggle);
+    await oldToggle.click();
+    await expect.poll(cachedFirstTurnCommandCount, { timeout: 120_000 }).toBeGreaterThan(0);
+    await revealVirtualizedChatLocator(page, firstCommand);
+    await firstCommand.getByRole("button").first().click();
+    await expect(firstCommand.locator("pre")).toContainText("first turn sleep finished");
+    await revealVirtualizedChatLocator(page, oldToggle);
+    await oldToggle.click();
+    await expect.poll(cachedFirstTurnCommandCount).toBe(0);
+    await revealVirtualizedChatLocator(page, firstReply);
+    await expect(firstReply).toHaveText(firstReplyText);
   } finally {
     await secondContext.close();
   }
@@ -284,11 +562,7 @@ test("fans out a real remote app-server thread to multiple browser clients acros
     .fill(
       [
         `请执行一个较长命令来等待中断：${interruptMarker}`,
-        "运行 python - <<'PY'",
-        "import time",
-        "time.sleep(30)",
-        "print('interrupt target finished')",
-        "PY",
+        "运行 sleep 30; printf 'interrupt target finished\\n'",
       ].join("\n"),
     );
   await page.getByTestId("send-turn-button").click();
@@ -323,17 +597,24 @@ function firstIntermediateStepsToggle(page: Page) {
 
 async function openThreadFromProjectOrRestoredState(
   page: Page,
-  projectId: number,
+  hostId: number,
+  cwd: string,
   threadId: string,
 ) {
   if ((await currentSelectedThreadId(page)) === threadId) {
     return;
   }
 
-  await expect(page.getByTestId(`project-button-${projectId}`)).toBeVisible();
+  const projectButton = page.getByTestId(`project-button-${cwd}`);
+  if (!(await projectButton.isVisible().catch(() => false))) {
+    // A newly opened browser restores its own sidebar expansion state. Follow the same interaction
+    // a user performs instead of assuming that another browser left this host expanded.
+    await page.getByTestId(`host-button-${hostId}`).click();
+  }
+  await expect(projectButton).toBeVisible();
   const row = page.getByTestId(`project-thread-row-${threadId}`);
   if (!(await row.isVisible().catch(() => false))) {
-    await page.getByTestId(`project-button-${projectId}`).click();
+    await projectButton.click();
   }
   if ((await currentSelectedThreadId(page)) === threadId) {
     return;
@@ -367,6 +648,15 @@ async function currentSelectedThreadId(page: Page) {
 
 async function triggerRealtimeResume(page: Page) {
   await page.evaluate(() => {
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      value: "hidden",
+    });
+    document.dispatchEvent(new Event("visibilitychange"));
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      value: "visible",
+    });
     window.dispatchEvent(new Event("focus"));
     document.dispatchEvent(new Event("visibilitychange"));
   });
@@ -398,7 +688,11 @@ async function activeRemoteTurnId(page: Page) {
       navigation.selectedThreadId !== ""
         ? `${navigation.selectedHostId}:${navigation.selectedThreadId}`
         : "";
-    return String(runtime.activeTerminalProcessByThreadKey[key]?.turnId ?? "");
+    return String(
+      runtime.activeTurnIdsByThreadKey[key] ??
+        runtime.activeTerminalProcessByThreadKey[key]?.turnId ??
+        "",
+    );
   });
 }
 
@@ -408,4 +702,8 @@ async function threadRuntimeStatus(page: Page, hostId: number, threadId: string)
       window.__codexGatewayE2e?.runtime.threadStatuses[`${hostId}:${threadId}`] ?? "idle",
     { hostId, threadId },
   );
+}
+
+async function inProgressCommandCount(page: Page) {
+  return page.getByTestId("command-status-running").count();
 }

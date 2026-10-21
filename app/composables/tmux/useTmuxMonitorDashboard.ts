@@ -26,7 +26,6 @@ export function useTmuxMonitorDashboard() {
         candidate.hostId === hostId && candidate.threadId === navigation.selectedThreadId,
     );
     return {
-      projectId: summary?.projectId ?? navigation.selectedProjectId,
       threadId: navigation.selectedThreadId,
       threadTitle: firstNonEmptyString([summary?.title, navigation.selectedThreadId]) ?? "",
     };

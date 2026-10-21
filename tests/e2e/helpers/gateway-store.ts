@@ -7,17 +7,17 @@ import type {
   ProjectRecord,
   ThreadGoalStatus,
   ThreadHistoryState,
+  ThreadTimelineHistoryState,
   ThreadSettingsState,
-  ThreadTimelineTurn,
   ThreadTokenUsageState,
 } from "../../../shared/types";
-import { projectThreadTimelineHistory } from "../../../shared/thread-history/timeline";
 import type { ThreadViewState } from "../../../app/stores/gateway/types";
 import {
   defaultGatewayHost,
   defaultGatewayProject,
   emptyThreadHistory,
 } from "../fixtures/thread-history";
+import { projectThreadTimelineHistory } from "../../../shared/thread-history/timeline";
 import { gatewayThreadFixture, type GatewayThreadFixture } from "../fixtures/gateway-thread";
 import {
   installRealtimeInterruptRoute,
@@ -31,7 +31,7 @@ import {
 
 interface SeedGatewayThreadInput {
   hostId?: number;
-  projectId?: number | null;
+  cwd?: string | null;
   threadId?: string | null;
   host?: HostRecord;
   project?: ProjectRecord | null;
@@ -40,8 +40,7 @@ interface SeedGatewayThreadInput {
   threads?: GatewayThreadFixture[];
   status?: "idle" | "running" | "completed" | "failed" | "interrupted";
   loading?: boolean;
-  olderTurnsCursor?: string | null;
-  newerTurnsCursor?: string | null;
+  oldestTimelineCursor?: string | null;
   events?: GatewayEvent[];
   threadSettings?: ThreadSettingsState;
   tokenUsage?: ThreadTokenUsageState;
@@ -50,9 +49,7 @@ interface SeedGatewayThreadInput {
   eventEpoch?: string;
   threadViews?: Record<
     string,
-    Omit<ThreadViewState, "timelineTurns"> & {
-      timelineTurns?: ThreadTimelineTurn[];
-    }
+    Omit<ThreadViewState, "history"> & { history?: ThreadHistoryState | null }
   >;
 }
 
@@ -70,7 +67,7 @@ type SeedGatewayThreadRuntimeInput = Omit<
 
 export async function seedGatewayThread(page: Page, input: SeedGatewayThreadInput) {
   const hostId = input.hostId ?? 1;
-  const projectId = input.projectId ?? null;
+  const cwd = input.cwd ?? null;
   const threadId = input.threadId ?? null;
   const defaultHistory =
     input.threadId !== null && input.threadId !== undefined && input.threadId !== ""
@@ -87,29 +84,23 @@ export async function seedGatewayThread(page: Page, input: SeedGatewayThreadInpu
         ? null
         : gatewayThreadFixture(input.currentThread ?? { id: threadId ?? "e2e-thread" }, {
             hostId,
-            projectId,
+            cwd,
           }),
-    threads: (input.threads ?? []).map((thread) =>
-      gatewayThreadFixture(thread, { hostId, projectId }),
-    ),
+    threads: (input.threads ?? []).map((thread) => gatewayThreadFixture(thread, { hostId, cwd })),
     defaultHost: defaultGatewayHost(hostId),
-    defaultProject: defaultGatewayProject(hostId, input.projectId ?? 1),
+    defaultProject: defaultGatewayProject(hostId, input.cwd ?? "/tmp/e2e"),
     defaultHistory,
     threadViews: Object.fromEntries(
       Object.entries(input.threadViews ?? {}).map(([key, view]) => {
-        const history = view.history === null ? null : materializeHistoryFixture(view.history);
-        const timelineTurns =
-          view.timelineTurns ??
-          (history === null ? [] : projectThreadTimelineHistory(history).thread.turns);
+        const history =
+          view.history === undefined || view.history === null
+            ? null
+            : materializeHistoryFixture(view.history);
         return [
           key,
           {
             ...view,
             history,
-            timelineTurns: timelineTurns.map((turn) => ({
-              ...turn,
-              itemsView: turn.itemsView ?? ("full" as const),
-            })),
           },
         ];
       }),
@@ -120,7 +111,7 @@ export async function seedGatewayThread(page: Page, input: SeedGatewayThreadInpu
     if (!driver) throw new Error("Gateway E2E driver is unavailable");
     const { bootstrap, catalog, composer, navigation, runtime, views } = driver;
     const hostId = input.hostId ?? 1;
-    const projectId = input.projectId ?? null;
+    const cwd = input.cwd ?? null;
     const threadId = input.threadId ?? null;
     catalog.hosts = [input.host ?? input.defaultHost];
     if (input.models !== undefined) {
@@ -131,12 +122,12 @@ export async function seedGatewayThread(page: Page, input: SeedGatewayThreadInpu
     catalog.projects =
       input.project !== null && input.project !== undefined
         ? [input.project]
-        : projectId !== null
+        : cwd !== null
           ? [input.defaultProject]
           : [];
     navigation.threads = input.threads ?? [];
     navigation.selectedHostId = hostId;
-    navigation.selectedProjectId = projectId;
+    navigation.selectedCwd = cwd;
     navigation.selectedThreadId = threadId;
     const hasThread = threadId !== null && threadId !== "";
     views.currentThread = hasThread ? input.currentThread : null;
@@ -144,8 +135,7 @@ export async function seedGatewayThread(page: Page, input: SeedGatewayThreadInpu
     views.events = input.events ?? [];
     views.lastEventId = input.lastEventId ?? views.lastEventId;
     views.eventEpoch = input.eventEpoch ?? views.eventEpoch;
-    views.olderTurnsCursor = input.olderTurnsCursor ?? null;
-    views.newerTurnsCursor = input.newerTurnsCursor ?? null;
+    views.oldestTimelineCursor = input.oldestTimelineCursor ?? null;
     views.threadViews = { ...views.threadViews, ...input.threadViews };
     bootstrap.initializing = false;
     views.loading = input.loading ?? false;
@@ -161,19 +151,19 @@ export async function seedGatewayThread(page: Page, input: SeedGatewayThreadInpu
   }, runtimeInput);
 }
 
-function materializeHistoryFixture(history: ThreadHistoryState): ThreadHistoryState {
-  return {
+function materializeHistoryFixture(history: ThreadHistoryState): ThreadTimelineHistoryState {
+  return projectThreadTimelineHistory({
     thread: {
       ...history.thread,
       // `seedGatewayThread` injects already materialized histories directly into Pinia. Mark those
       // fixtures as full so tests exercise their declared user content; summary/notLoaded fixtures
-      // belong in realtime route tests that explicitly model `thread/items/list` pagination.
+      // belong in realtime route tests that explicitly model item pagination.
       turns: history.thread.turns.map((turn) => ({
         ...turn,
         itemsView: turn.itemsView ?? ("full" as const),
       })),
     },
-  };
+  });
 }
 
 export async function installRealtimeThreadSnapshotMock(
@@ -303,8 +293,12 @@ export async function completeTurnWithFinalAgentMessage(
   },
 ) {
   await page.evaluate((input) => {
-    const views = window.__codexGatewayE2e?.views;
-    if (!views) throw new Error("Gateway E2E driver is unavailable");
+    const driver = window.__codexGatewayE2e;
+    if (!driver) throw new Error("Gateway E2E driver is unavailable");
+    const { views, runtime, navigation } = driver;
+    const hostId = navigation.selectedHostId;
+    const threadId = navigation.selectedThreadId;
+    if (hostId === null || threadId === null) throw new Error("Missing selected thread");
     const history = views.history;
     const turn = history?.thread.turns[0];
     if (!history || !turn) throw new Error("Gateway thread history is unavailable");
@@ -324,6 +318,9 @@ export async function completeTurnWithFinalAgentMessage(
     views.setHistory({
       thread: { ...history.thread, turns: [...history.thread.turns] },
     });
+    // These scroll scenarios finish the entire Agent loop, not one Turn in a continuing Goal.
+    // Model the official idle status too: item/Turn completion alone must not end a running thread.
+    runtime.setThreadStatus(hostId, threadId, "completed");
   }, input);
 }
 
@@ -358,14 +355,14 @@ export async function receiveRealtimeThreadEvent(page: Page, event: GatewayEvent
 
 export async function openThreadInStore(
   page: Page,
-  input: { threadId: string; hostId: number; projectId?: number | null },
+  input: { threadId: string; hostId: number; cwd?: string | null },
 ) {
   await page.evaluate(async (input) => {
     const views = window.__codexGatewayE2e?.views;
     if (!views) throw new Error("Gateway E2E driver is unavailable");
     await views.openThread(input.threadId, {
       hostId: input.hostId,
-      projectId: input.projectId ?? null,
+      cwd: input.cwd ?? null,
     });
   }, input);
 }
@@ -391,14 +388,14 @@ export async function cacheSelectedThreadAndOpenThread(
   input: {
     threadId: string;
     hostId: number;
-    projectId?: number | null;
+    cwd?: string | null;
     otherThreadId: string;
     otherThreadName: string;
   },
 ) {
   const otherThread = gatewayThreadFixture(
     { id: input.otherThreadId, name: input.otherThreadName },
-    { hostId: input.hostId, projectId: input.projectId ?? null },
+    { hostId: input.hostId, cwd: input.cwd ?? null },
   );
   await page.evaluate(
     async ({ input, otherThread }) => {
@@ -411,7 +408,7 @@ export async function cacheSelectedThreadAndOpenThread(
       views.setHistory({ thread: { id: input.otherThreadId, turns: [] } });
       await views.openThread(input.threadId, {
         hostId: input.hostId,
-        projectId: input.projectId ?? null,
+        cwd: input.cwd ?? null,
       });
     },
     { input, otherThread },
@@ -428,13 +425,10 @@ export async function setThreadViewHistoryAndStatus(
     turnId?: string | null;
   },
 ) {
-  const currentThread = gatewayThreadFixture(
-    { id: input.threadId },
-    { hostId: input.hostId, projectId: null },
-  );
-  const timelineTurns = projectThreadTimelineHistory(input.history).thread.turns;
+  const currentThread = gatewayThreadFixture({ id: input.threadId }, { hostId: input.hostId });
+  const runtimeInput = { ...input, history: materializeHistoryFixture(input.history) };
   await page.evaluate(
-    ({ input, currentThread, timelineTurns }) => {
+    ({ input, currentThread }) => {
       const driver = window.__codexGatewayE2e;
       if (!driver) throw new Error("Gateway E2E driver is unavailable");
       const { runtime, views } = driver;
@@ -442,14 +436,12 @@ export async function setThreadViewHistoryAndStatus(
       const previous = views.threadViews[key];
       views.threadViews[key] = {
         hostId: input.hostId,
-        projectId: previous?.projectId ?? null,
+        cwd: previous?.cwd ?? currentThread.cwd,
         threadId: input.threadId,
         currentThread: previous?.currentThread ?? currentThread,
         history: input.history,
-        timelineTurns,
         events: previous?.events ?? [],
-        olderTurnsCursor: previous?.olderTurnsCursor ?? null,
-        newerTurnsCursor: previous?.newerTurnsCursor ?? null,
+        oldestTimelineCursor: previous?.oldestTimelineCursor ?? null,
         lastEventId: previous?.lastEventId ?? 0,
         eventEpoch: previous?.eventEpoch ?? "e2e-event-epoch",
         loading: previous?.loading ?? false,
@@ -461,7 +453,7 @@ export async function setThreadViewHistoryAndStatus(
         });
       }
     },
-    { input, currentThread, timelineTurns },
+    { input: runtimeInput, currentThread },
   );
 }
 

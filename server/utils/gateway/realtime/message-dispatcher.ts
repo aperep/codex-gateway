@@ -55,6 +55,21 @@ export class RealtimeMessageDispatcher {
       .with({ type: "host.lifecycle.subscribe" }, (value) =>
         this.dispatchEntry(peer, value, this.handlers[value.type]),
       )
+      .with({ type: "host.upgrades.read" }, (value) =>
+        this.dispatchEntry(peer, value, this.handlers[value.type]),
+      )
+      .with({ type: "host.daemon.restart" }, (value) =>
+        this.dispatchEntry(peer, value, this.handlers[value.type]),
+      )
+      .with({ type: "notification.webPush.configure" }, (value) =>
+        this.dispatchEntry(peer, value, this.handlers[value.type]),
+      )
+      .with({ type: "notification.webPush.subscribe" }, (value) =>
+        this.dispatchEntry(peer, value, this.handlers[value.type]),
+      )
+      .with({ type: "notification.webPush.unsubscribe" }, (value) =>
+        this.dispatchEntry(peer, value, this.handlers[value.type]),
+      )
       .with({ type: "file.git.compare" }, (value) =>
         this.dispatchEntry(peer, value, this.handlers[value.type]),
       )
@@ -77,6 +92,18 @@ export class RealtimeMessageDispatcher {
         this.dispatchEntry(peer, value, this.handlers[value.type]),
       )
       .with({ type: "host.metrics.unsubscribe" }, (value) =>
+        this.dispatchEntry(peer, value, this.handlers[value.type]),
+      )
+      .with({ type: "host.mfa.submit" }, (value) =>
+        this.dispatchEntry(peer, value, this.handlers[value.type]),
+      )
+      .with({ type: "host.mfa.connect" }, (value) =>
+        this.dispatchEntry(peer, value, this.handlers[value.type]),
+      )
+      .with({ type: "host.mfa.cancel" }, (value) =>
+        this.dispatchEntry(peer, value, this.handlers[value.type]),
+      )
+      .with({ type: "project.defaults.read" }, (value) =>
         this.dispatchEntry(peer, value, this.handlers[value.type]),
       )
       .with({ type: "tmux.sessions.subscribe" }, (value) =>
@@ -134,10 +161,22 @@ export class RealtimeMessageDispatcher {
       .with({ type: "thread.subscribe" }, (value) =>
         this.dispatchEntry(peer, value, this.handlers[value.type]),
       )
-      .with({ type: "thread.turns.load" }, (value) =>
+      .with({ type: "thread.settings.read" }, (value) =>
         this.dispatchEntry(peer, value, this.handlers[value.type]),
       )
-      .with({ type: "thread.items.load" }, (value) =>
+      .with({ type: "thread.timeline.load" }, (value) =>
+        this.dispatchEntry(peer, value, this.handlers[value.type]),
+      )
+      .with({ type: "thread.items.read" }, (value) =>
+        this.dispatchEntry(peer, value, this.handlers[value.type]),
+      )
+      .with({ type: "thread.attachments.list" }, (value) =>
+        this.dispatchEntry(peer, value, this.handlers[value.type]),
+      )
+      .with({ type: "thread.attachment.add" }, (value) =>
+        this.dispatchEntry(peer, value, this.handlers[value.type]),
+      )
+      .with({ type: "thread.attachment.remove" }, (value) =>
         this.dispatchEntry(peer, value, this.handlers[value.type]),
       )
       .with({ type: "thread.unsubscribe" }, (value) =>

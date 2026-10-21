@@ -8,6 +8,8 @@ import type {
   ThreadSettingsState,
   ThreadTokenUsageState,
 } from "../../../shared/types";
+import type { AppServerTimelinePage } from "../../../shared/runtime/app-server";
+import { parseThreadTimelinePage } from "../../../shared/runtime/app-server";
 import { parseRealtimeClientMessage } from "../../../shared/runtime/realtime";
 import { projectThreadTimelineHistory } from "../../../shared/thread-history/timeline";
 import { gatewayThreadFixture, type GatewayThreadFixture } from "../fixtures/gateway-thread";
@@ -20,11 +22,11 @@ export interface MockThreadSnapshotInput {
     {
       thread?: GatewayThreadFixture;
       history?: ThreadHistoryState;
-      projectId?: number | null;
+      cwd?: string | null;
       project?: ProjectRecord | null;
       threadSettings?: ThreadSettingsState;
       tokenUsage?: ThreadTokenUsageState | null;
-      turnsPage?: { nextCursor: string | null; backwardsCursor: string | null };
+      oldestTimelineCursor?: string | null;
       recentEvents?: GatewayEvent[];
       lastEventId?: number;
       eventEpoch?: string;
@@ -39,7 +41,7 @@ interface RealtimeRouteState {
   captureInterrupts: boolean;
   interruptRequest: Extract<RealtimeClientMessage, { type: "turn.interrupt" }> | null;
   serverRequestResponse: ServerRequestResponseRouteState | null;
-  threadTurnsLoad: ThreadTurnsLoadRouteState | null;
+  threadTimelineLoad: ThreadTimelineLoadRouteState | null;
 }
 
 interface RealtimeRouteConnection {
@@ -54,21 +56,19 @@ type ServerRequestResponseRouteState =
     }
   | { mode: "fail"; message: string };
 
-interface ThreadTurnsLoadRouteState {
+interface ThreadTimelineLoadRouteState {
   deferred: boolean;
   requests: Array<{
     connection: RealtimeRouteConnection;
-    message: Extract<RealtimeClientMessage, { type: "thread.turns.load" }>;
+    message: Extract<RealtimeClientMessage, { type: "thread.timeline.load" }>;
   }>;
-  response: Extract<RealtimeServerMessage, { type: "thread.turns.page" }>;
+  response: AppServerTimelinePage;
 }
 
-export type ThreadTurnsLoadResponseInput = Omit<
-  Extract<RealtimeServerMessage, { type: "thread.turns.page" }>,
-  "history"
-> & {
+export interface ThreadTimelineLoadResponseInput {
   history: ThreadHistoryState;
-};
+  nextCursor: string | null;
+}
 
 const routes = new WeakMap<Page, RealtimeRouteState>();
 
@@ -81,7 +81,7 @@ export async function installRealtimeRoute(page: Page) {
     captureInterrupts: false,
     interruptRequest: null,
     serverRequestResponse: null,
-    threadTurnsLoad: null,
+    threadTimelineLoad: null,
   };
   routes.set(page, state);
   await page.routeWebSocket(/\/api\/realtime$/, (route) => {
@@ -123,34 +123,32 @@ export function realtimeInterruptRequest(page: Page) {
   return routes.get(page)?.interruptRequest ?? null;
 }
 
-export function installRealtimeThreadTurnsLoadRoute(
+export function installRealtimeThreadTimelineLoadRoute(
   page: Page,
-  response: ThreadTurnsLoadResponseInput,
+  response: ThreadTimelineLoadResponseInput,
   deferred: boolean,
 ) {
   const state = requireRealtimeRoute(page);
-  state.threadTurnsLoad = {
+  const timelinePage = timelinePageFromHistory(response.history, response.nextCursor);
+  state.threadTimelineLoad = {
     deferred,
     requests: [],
-    response: {
-      ...response,
-      history: projectThreadTimelineHistory(response.history),
-    },
+    response: timelinePage,
   };
 }
 
-export function releaseRealtimeThreadTurnsLoadRoute(page: Page) {
+export function releaseRealtimeThreadTimelineLoadRoute(page: Page) {
   const state = requireRealtimeRoute(page);
-  const route = state.threadTurnsLoad;
-  if (route === null) throw new Error("No deferred thread turns route is installed");
+  const route = state.threadTimelineLoad;
+  if (route === null) throw new Error("No deferred thread timeline route is installed");
   for (const request of route.requests) {
-    sendThreadTurnsPage(request.connection, route.response, request.message);
+    sendThreadTimelinePage(request.connection, route.response, request.message);
   }
   route.deferred = false;
 }
 
-export function realtimeThreadTurnsLoadRequests(page: Page) {
-  return (routes.get(page)?.threadTurnsLoad?.requests ?? []).map(({ message }) => message);
+export function realtimeThreadTimelineLoadRequests(page: Page) {
+  return (routes.get(page)?.threadTimelineLoad?.requests ?? []).map(({ message }) => message);
 }
 
 export function realtimeThreadActivateRequests(page: Page) {
@@ -168,7 +166,14 @@ function handleClientMessage(
   connection: RealtimeRouteConnection,
   raw: string | Buffer,
 ) {
-  const message = parseRealtimeClientMessage(JSON.parse(raw.toString()));
+  const text = textRealtimeMessage(raw);
+  if (text === null) {
+    // Terminal input and resize use the production binary transport. The route only virtualizes
+    // selected JSON requests; binary frames must remain a transparent browser-to-Gateway path.
+    connection.upstream.send(raw);
+    return;
+  }
+  const message = parseRealtimeClientMessage(JSON.parse(text));
   if (message.type === "thread.activate" && state.snapshots !== null) {
     handleThreadActivate(state, connection, message);
     return;
@@ -181,31 +186,75 @@ function handleClientMessage(
     handleServerRequestResponse(connection, state.serverRequestResponse, message);
     return;
   }
-  if (isThreadTurnsLoad(message) && state.threadTurnsLoad !== null) {
-    state.threadTurnsLoad.requests.push({ connection, message });
-    if (!state.threadTurnsLoad.deferred)
-      sendThreadTurnsPage(connection, state.threadTurnsLoad.response, message);
+  if (isThreadTimelineLoad(message) && state.threadTimelineLoad !== null) {
+    state.threadTimelineLoad.requests.push({ connection, message });
+    if (!state.threadTimelineLoad.deferred)
+      sendThreadTimelinePage(connection, state.threadTimelineLoad.response, message);
     return;
   }
   connection.upstream.send(raw);
 }
 
-function isThreadTurnsLoad(
-  message: RealtimeClientMessage,
-): message is Extract<RealtimeClientMessage, { type: "thread.turns.load" }> {
-  return message.type === "thread.turns.load";
+function textRealtimeMessage(raw: string | Buffer) {
+  if (typeof raw === "string") return raw;
+  const firstByte = raw.find((value) => !isAsciiWhitespace(value));
+  return firstByte === 0x7b || firstByte === 0x5b ? raw.toString("utf8") : null;
 }
 
-function sendThreadTurnsPage(
+function isAsciiWhitespace(value: number) {
+  return value === 0x09 || value === 0x0a || value === 0x0d || value === 0x20;
+}
+
+function isThreadTimelineLoad(
+  message: RealtimeClientMessage,
+): message is Extract<RealtimeClientMessage, { type: "thread.timeline.load" }> {
+  return message.type === "thread.timeline.load";
+}
+
+function sendThreadTimelinePage(
   connection: RealtimeRouteConnection,
-  response: Extract<RealtimeServerMessage, { type: "thread.turns.page" }>,
-  request: Extract<RealtimeClientMessage, { type: "thread.turns.load" }>,
+  response: AppServerTimelinePage,
+  request: Extract<RealtimeClientMessage, { type: "thread.timeline.load" }>,
 ) {
   send(connection, {
-    ...response,
+    type: "thread.timeline.page",
     requestId: request.requestId,
     hostId: request.hostId,
     threadId: request.threadId,
+    ...response,
+  });
+}
+
+function timelinePageFromHistory(history: ThreadHistoryState, nextCursor: string | null) {
+  const data: unknown[] = [];
+  let position = 0;
+  for (const turn of history.thread.turns) {
+    const turnId = String(turn.id ?? `turn-${position}`);
+    data.push({
+      type: "turnStarted",
+      position: position++,
+      turnId,
+      startedAt: turn.startedAt ?? null,
+    });
+    for (const item of turn.items ?? []) {
+      if (typeof item.id !== "string" || typeof item.type !== "string") continue;
+      data.push({ type: "item", position: position++, turnId, item });
+    }
+    data.push({
+      type: "turnCompleted",
+      position: position++,
+      turnId,
+      status: typeof turn.status === "string" ? turn.status : "completed",
+      error: turn.error ?? null,
+      startedAt: turn.startedAt ?? null,
+      completedAt: turn.completedAt ?? null,
+      durationMs: turn.durationMs ?? null,
+    });
+  }
+  return parseThreadTimelinePage({
+    data,
+    nextCursor,
+    activeRealtimeSessionAtPageStart: null,
   });
 }
 
@@ -223,7 +272,7 @@ function handleThreadActivate(
   const respond = () => {
     const thread = gatewayThreadFixture(snapshot.thread ?? { id: message.threadId }, {
       hostId: message.hostId ?? input.hostId ?? 1,
-      projectId: snapshot.projectId ?? null,
+      cwd: snapshot.cwd ?? null,
     });
     send(connection, {
       type: "thread.snapshot",
@@ -235,11 +284,10 @@ function handleThreadActivate(
         snapshot.history ?? { thread: { id: message.threadId, turns: [] } },
       ),
       runtimeStatus: snapshot.runtimeStatus ?? null,
-      projectId: snapshot.projectId ?? null,
       project: snapshot.project ?? null,
       threadSettings: snapshot.threadSettings ?? {},
       tokenUsage: snapshot.tokenUsage ?? null,
-      turnsPage: snapshot.turnsPage ?? { nextCursor: null, backwardsCursor: null },
+      oldestTimelineCursor: snapshot.oldestTimelineCursor ?? null,
       recentEvents: snapshot.recentEvents ?? [],
       lastEventId: snapshot.lastEventId ?? 0,
       eventEpoch: snapshot.eventEpoch ?? "e2e-event-epoch",

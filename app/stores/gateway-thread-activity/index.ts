@@ -12,7 +12,6 @@ import { isAppServerSubAgentThread } from "~~/shared/runtime/app-server";
 
 export interface ThreadActivitySummary {
   hostId: number;
-  projectId: number | null;
   threadId: string;
   title: string;
   cwd: string | null;
@@ -26,7 +25,6 @@ export interface ThreadActivitySummary {
 
 export interface ThreadActivityMetadata {
   id: string;
-  projectId: number | null;
   parentThreadId: string | null;
   agentNickname: string | null;
   agentRole: string | null;
@@ -68,13 +66,10 @@ export const useGatewayThreadActivityStore = defineStore("gateway-thread-activit
   ) {
     for (const record of records) {
       const project = projects.find(
-        (candidate) =>
-          candidate.hostId === hostId &&
-          (candidate.id === record.projectId || candidate.remotePath === record.cwd),
+        (candidate) => candidate.hostId === hostId && candidate.remotePath === record.cwd,
       );
       upsertSummary({
         hostId,
-        projectId: record.projectId ?? project?.id ?? null,
         threadId: record.id,
         title: firstNonEmptyString([record.title, record.name, record.preview]) ?? record.id,
         cwd: stringOrNull(record.cwd),
@@ -99,7 +94,6 @@ export const useGatewayThreadActivityStore = defineStore("gateway-thread-activit
       [key]: {
         ...existing,
         ...summary,
-        projectId: summary.projectId ?? existing?.projectId ?? null,
         cwd: summary.cwd ?? existing?.cwd ?? null,
         projectName: summary.projectName ?? existing?.projectName ?? null,
         parentThreadId: summary.parentThreadId ?? existing?.parentThreadId ?? null,
@@ -155,9 +149,9 @@ function summaryFromGatewayThread(
   projects: ProjectRecord[],
 ): ThreadActivitySummary {
   const project = projects.find(
-    (candidate) => candidate.id === thread.projectId && candidate.hostId === thread.hostId,
+    (candidate) => candidate.remotePath === thread.cwd && candidate.hostId === thread.hostId,
   );
-  return summaryFromThread(thread.hostId, thread, project, thread.projectId, thread.title);
+  return summaryFromThread(thread.hostId, thread, project, thread.title);
 }
 
 function summaryFromAppServerThread(
@@ -168,7 +162,7 @@ function summaryFromAppServerThread(
   const project = projects.find(
     (candidate) => candidate.hostId === hostId && candidate.remotePath === thread.cwd,
   );
-  return summaryFromThread(hostId, thread, project, project?.id ?? null, null);
+  return summaryFromThread(hostId, thread, project, null);
 }
 
 function summaryFromThread(
@@ -187,7 +181,6 @@ function summaryFromThread(
     | "updatedAt"
   >,
   project: ProjectRecord | undefined,
-  projectId: number | null,
   gatewayTitle: string | null,
 ): ThreadActivitySummary {
   const parentThreadId = stringOrNull(thread.parentThreadId);
@@ -195,7 +188,6 @@ function summaryFromThread(
   const agentRole = stringOrNull(thread.agentRole);
   return {
     hostId,
-    projectId,
     threadId: thread.id,
     title: firstNonEmptyString([gatewayTitle, thread.name, thread.preview]) ?? thread.id,
     cwd: stringOrNull(thread.cwd),

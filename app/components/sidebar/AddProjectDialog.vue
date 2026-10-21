@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { FolderIcon, FolderOpenIcon } from "@lucide/vue";
 import { computed, ref, watch } from "vue";
-import type { HostRecord, ProjectRecord, RemoteDirectoryEntry } from "~~/shared/types";
+import type { HostRecord, RemoteDirectoryEntry } from "~~/shared/types";
 import { Button } from "@codex-gateway/ui/button";
 import {
   Dialog,
@@ -18,7 +18,6 @@ import { errorMessageLabels, messageFromError } from "@/stores/gateway/thread-ut
 const open = defineModel<boolean>("open", { required: true });
 const props = defineProps<{
   host: HostRecord | null;
-  project?: ProjectRecord | null;
 }>();
 
 const catalog = useGatewayCatalogStore();
@@ -33,7 +32,6 @@ const saving = ref(false);
 const visibleDirectories = computed(() =>
   directories.value.filter((entry) => entry.type === "directory").slice(0, 12),
 );
-const editing = computed(() => Boolean(props.project));
 
 watch(open, (isOpen) => {
   if (isOpen) {
@@ -52,11 +50,7 @@ async function saveProject() {
       name: projectForm.value.name,
       remotePath: projectForm.value.remotePath,
     };
-    if (props.project) {
-      await catalog.updateProject(props.project.id, input);
-    } else {
-      await catalog.createProject(input);
-    }
+    await catalog.createProject(input);
     open.value = false;
   } finally {
     saving.value = false;
@@ -90,10 +84,8 @@ function chooseDirectory(entry: RemoteDirectoryEntry) {
 }
 
 function resetForm() {
-  projectForm.value = props.project
-    ? { name: props.project.name, remotePath: props.project.remotePath }
-    : { name: "", remotePath: "" };
-  directoryPath.value = props.project?.remotePath || "~";
+  projectForm.value = { name: "", remotePath: "" };
+  directoryPath.value = "~";
   directories.value = [];
   directoryError.value = "";
   browsing.value = false;
@@ -105,10 +97,10 @@ function resetForm() {
   <Dialog v-model:open="open">
     <DialogContent class="flex max-h-[min(42rem,calc(100vh-2rem))] flex-col overflow-hidden">
       <DialogHeader>
-        <DialogTitle>{{ editing ? t("app.editProject") : t("app.addProject") }}</DialogTitle>
+        <DialogTitle>{{ t("app.addProject") }}</DialogTitle>
         <DialogDescription>
           {{
-            t(editing ? "app.editProjectDescription" : "app.addProjectDescription", {
+            t("app.addProjectDescription", {
               host: host?.name ?? "",
             })
           }}
@@ -174,7 +166,7 @@ function resetForm() {
         @click="saveProject"
       >
         <FolderIcon class="size-4" />
-        {{ editing ? t("app.saveProject") : t("app.addProject") }}
+        {{ t("app.addProject") }}
       </Button>
     </DialogContent>
   </Dialog>

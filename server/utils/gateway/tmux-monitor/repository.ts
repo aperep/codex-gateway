@@ -48,16 +48,15 @@ export class TmuxMonitorRepository {
     const result = gatewayDatabase()
       .prepare(
         `INSERT INTO tmux_monitors (
-          user_id, host_id, project_id, thread_id, thread_title,
+          user_id, host_id, thread_id, thread_title,
           session_name, session_id, session_created,
           window_index, window_name, pane_index, pane_id, pane_pid,
           initial_command, last_command, mode, status, created_at, run_started_at, last_checked_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)`,
       )
       .run(
         userId,
         hostId,
-        thread?.projectId ?? null,
         thread?.threadId ?? null,
         thread?.threadTitle ?? null,
         pane.sessionName,
@@ -244,17 +243,16 @@ export class TmuxMonitorRepository {
       const inserted = database
         .prepare(
           `INSERT INTO tmux_monitors (
-            user_id, host_id, project_id, thread_id, thread_title,
+            user_id, host_id, thread_id, thread_title,
             session_name, session_id, session_created, window_index, window_name,
             pane_index, pane_id, pane_pid, initial_command, last_command, mode, status,
             completion_reason, created_at, run_started_at, last_checked_at, completed_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'permanent', 'completed',
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'permanent', 'completed',
             ?, ?, ?, ?, ?)`,
         )
         .run(
           monitor.userId,
           monitor.hostId,
-          monitor.projectId,
           monitor.threadId,
           monitor.threadTitle,
           monitor.sessionName,
@@ -360,7 +358,6 @@ function mapMonitor(row: Record<string, unknown>): StoredTmuxMonitor {
     id: Number(row.id),
     userId: Number(row.user_id),
     hostId: Number(row.host_id),
-    projectId: optionalInteger(row.project_id),
     threadId: optionalText(row.thread_id),
     threadTitle: optionalText(row.thread_title),
     sessionName: String(row.session_name),
@@ -390,8 +387,4 @@ function mapMonitor(row: Record<string, unknown>): StoredTmuxMonitor {
 
 function optionalText(value: unknown) {
   return typeof value === "string" && value !== "" ? value : null;
-}
-
-function optionalInteger(value: unknown) {
-  return typeof value === "number" && Number.isInteger(value) ? value : null;
 }

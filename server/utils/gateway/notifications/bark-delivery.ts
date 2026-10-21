@@ -1,21 +1,22 @@
 import { normalizeNotificationSettings } from "~~/shared/config";
-import { currentGatewayUserId, gatewayMemoryState } from "../state/memory";
+import { currentGatewayUserId, currentGatewayMemoryState } from "../state/memory";
 import { BarkRequestError, sendBarkNotification } from "./bark-provider";
 import type { ServerNotification } from "~~/shared/types";
 import pRetry from "p-retry";
+import { gatewayLog } from "../logging";
+import { markPushDelivered, wasPushDelivered } from "./push-delivery-state";
 
-const MAX_DELIVERED_NOTIFICATION_KEYS = 1_000;
-const pendingDeliveries = new Map<string, Promise<void>>();
+const pendingDeliveries = new Map<string, Promise<boolean>>();
 
 export async function deliverBarkNotification(notification: ServerNotification) {
   const userId = currentGatewayUserId();
   if (userId === null) throw new Error("Bark delivery requires an authenticated user scope");
   const deliveryKey = `${userId}:${notification.key}`;
-  const settings = normalizeNotificationSettings(gatewayMemoryState.notifications).bark;
+  const settings = normalizeNotificationSettings(currentGatewayMemoryState().notifications).bark;
   if (!settings.enabled || !settings.deviceKey) {
-    return;
+    return false;
   }
-  if (alreadyDelivered(notification.key)) return;
+  if (wasPushDelivered(notification.key)) return true;
   const pending = pendingDeliveries.get(deliveryKey);
   if (pending !== undefined) return pending;
   markPending(notification.key);
@@ -28,8 +29,9 @@ export async function deliverBarkNotification(notification: ServerNotification) 
     shouldRetry: ({ error }) => !(error instanceof BarkRequestError) || error.retryable,
   })
     .then(() => {
-      markDelivered(notification.key);
+      markPushDelivered(notification.key);
       logSuccessfulDelivery(userId, notification);
+      return true;
     })
     .finally(() => {
       pendingDeliveries.delete(deliveryKey);
@@ -39,35 +41,25 @@ export async function deliverBarkNotification(notification: ServerNotification) 
   return delivery;
 }
 
-function alreadyDelivered(key: string) {
-  return gatewayMemoryState.deliveredNotificationKeys.includes(key);
-}
-
 function markPending(key: string) {
-  gatewayMemoryState.pendingNotificationKeys = [...gatewayMemoryState.pendingNotificationKeys, key];
-}
-
-function clearPending(key: string) {
-  gatewayMemoryState.pendingNotificationKeys = gatewayMemoryState.pendingNotificationKeys.filter(
-    (candidate) => candidate !== key,
-  );
-}
-
-function markDelivered(key: string) {
-  gatewayMemoryState.deliveredNotificationKeys = [
-    ...gatewayMemoryState.deliveredNotificationKeys.slice(-(MAX_DELIVERED_NOTIFICATION_KEYS - 1)),
+  currentGatewayMemoryState().pendingNotificationKeys = [
+    ...currentGatewayMemoryState().pendingNotificationKeys,
     key,
   ];
 }
 
+function clearPending(key: string) {
+  currentGatewayMemoryState().pendingNotificationKeys =
+    currentGatewayMemoryState().pendingNotificationKeys.filter((candidate) => candidate !== key);
+}
+
 function logSuccessfulDelivery(userId: number, notification: ServerNotification) {
   const { target } = notification;
-  console.info("[notifications] Bark notification delivered", {
+  gatewayLog("info", "notifications", "Bark notification delivered", {
     userId,
     key: notification.key,
     targetKind: target.kind,
     hostId: target.hostId,
-    projectId: target.projectId,
     threadId: target.threadId,
     ...(target.kind === "tmuxMonitor" ? { monitorId: target.monitorId } : {}),
   });

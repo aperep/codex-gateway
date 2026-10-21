@@ -1,8 +1,7 @@
-import type { HostRecord, ProjectRecord } from "./records";
+import type { HostRecord } from "./records";
 
 export interface PinnedThreadRecord {
   hostId: number;
-  projectId: number | null;
   threadId: string;
   title: string;
   subtitle?: string | null;
@@ -19,12 +18,12 @@ export interface BarkNotificationSettings {
 
 export interface GatewayNotificationSettings {
   bark: BarkNotificationSettings;
+  webPush: { enabled: boolean };
 }
 
 export interface GatewayConfig {
-  version: 1;
+  version: 2;
   hosts: HostRecord[];
-  projects: ProjectRecord[];
   pinnedThreads: PinnedThreadRecord[];
   notifications: GatewayNotificationSettings;
 }

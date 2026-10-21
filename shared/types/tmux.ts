@@ -41,7 +41,6 @@ export interface TmuxPaneOutput {
 }
 
 export interface TmuxMonitorThreadBinding {
-  projectId: number | null;
   threadId: string;
   threadTitle: string;
 }
@@ -49,7 +48,6 @@ export interface TmuxMonitorThreadBinding {
 export interface TmuxMonitor {
   id: number;
   hostId: number;
-  projectId: number | null;
   threadId: string | null;
   threadTitle: string | null;
   sessionName: string;

@@ -3,6 +3,7 @@ import { authenticatedFetch, openApp, reloadApp } from "./helpers/app";
 import { hostRecordSchema, projectRecordSchema } from "./helpers/http-schemas";
 import { seedGatewayThread } from "./helpers/gateway-store";
 import { execRemoteSsh } from "./helpers/remote-codex";
+import type { ThreadHistoryState } from "../../shared/types";
 
 test("the unified file workspace browses, restores, and refreshes real remote files", async ({
   page,
@@ -144,7 +145,7 @@ done
   );
   const origin = await page.evaluate(() => window.location.origin);
   const threadId = `file-preview-thread-${Date.now()}`;
-  const latestHistory = {
+  const latestHistory: ThreadHistoryState = {
     thread: {
       id: threadId,
       turns: [
@@ -165,7 +166,7 @@ done
   };
   await seedGatewayThread(page, {
     hostId: host.id,
-    projectId: project.id,
+    cwd: project.remotePath,
     host: { ...host },
     project: { ...project },
     threadId,
@@ -178,6 +179,23 @@ done
             id: "file-preview-turn",
             status: "completed",
             items: [
+              {
+                id: "file-preview-patch",
+                type: "fileChange",
+                status: "completed",
+                changes: [
+                  {
+                    path: remotePath,
+                    kind: { type: "update" },
+                    diff: '@@ -2 +2 @@\n-  return "codex-gateway-file-baseline";\n+  return "codex-gateway-file-preview";',
+                  },
+                  {
+                    path: reviewDeletedPath,
+                    kind: { type: "delete" },
+                    diff: "-deleted file baseline",
+                  },
+                ],
+              },
               {
                 id: "file-preview-agent-message",
                 type: "agentMessage",
@@ -192,12 +210,22 @@ done
   });
 
   await expect(filesWorkspaceTab(page)).toBeVisible();
-  await page.getByRole("link", { name: "preview target" }).click();
+  await page
+    .getByRole("button", { name: /中间过程/ })
+    .first()
+    .click();
+  await expect(page.getByRole("button", { name: `打开文件：${reviewDeletedPath}` })).toBeDisabled();
+  const diffToggle = page.getByRole("button", { name: `收起差异：${remotePath}` }).first();
+  await diffToggle.click();
+  await page.getByRole("button", { name: `打开文件：${remotePath}` }).click();
   const panel = page.getByTestId("workspace-file-panel");
   await expect(panel).toBeVisible();
   await page.getByRole("button", { name: "向右分屏" }).click();
   await expect(page.getByTestId("chat-main-pane")).toBeVisible();
   await expect(panel).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: `展开差异：${remotePath}` }).first(),
+  ).toHaveAttribute("data-state", "closed");
   const [agentDockBox, filesDockBox] = await Promise.all([
     page.getByTestId("chat-main-pane").boundingBox(),
     panel.boundingBox(),
@@ -305,6 +333,8 @@ done
   for (let level = 1; level <= 14; level += 1) {
     await tree.getByText(`level-${String(level).padStart(2, "0")}`, { exact: true }).click();
   }
+  // The row count can already exceed 90 before the last lazy directory finishes loading.
+  await expect(tree.getByText("file-14-6.log", { exact: true })).toBeVisible();
   await expect.poll(() => tree.getByRole("treeitem").count()).toBeGreaterThan(90);
   const expandedTreeGeometry = await treeScroll.evaluate(async (element) => {
     element.scrollTop = Math.floor((element.scrollHeight - element.clientHeight) / 2);
@@ -418,7 +448,7 @@ done
 
   await seedGatewayThread(page, {
     hostId: host.id,
-    projectId: project.id,
+    cwd: project.remotePath,
     host: { ...host },
     project: { ...project },
     threadId,
@@ -581,10 +611,34 @@ done
 
   await fileTab(page, nestedPythonPath).click();
 
+  // Moving the browser between monitors changes its container dimensions. Exercise the user's
+  // actual split, then restore it after a reload; do not fabricate Dockview JSON or resize panels
+  // through private APIs, which would bypass the wrapper's proportionalLayout option.
+  const originalViewport = page.viewportSize();
+  if (originalViewport === null) throw new Error("Missing browser viewport");
+  for (const viewport of [
+    { width: 2400, height: 1200 },
+    { width: 1100, height: 760 },
+    originalViewport,
+  ]) {
+    await page.setViewportSize(viewport);
+    await expect
+      .poll(async () => {
+        const [agentBox, filesBox] = await Promise.all([
+          page.getByTestId("chat-main-pane").boundingBox(),
+          panel.boundingBox(),
+        ]);
+        if (agentBox === null || filesBox === null) return Number.POSITIVE_INFINITY;
+        return Math.abs(agentBox.width / (agentBox.width + filesBox.width) - dockWidthRatio);
+      })
+      .toBeLessThan(0.03);
+    await assertDockviewPanelsFillHost(page);
+  }
+
   await reloadApp(page);
   await seedGatewayThread(page, {
     hostId: host.id,
-    projectId: project.id,
+    cwd: project.remotePath,
     host: { ...host },
     project: { ...project },
     threadId,
@@ -633,7 +687,7 @@ done
   for (let cycle = 0; cycle < 3; cycle += 1) {
     await seedGatewayThread(page, {
       hostId: host.id,
-      projectId: project.id,
+      cwd: project.remotePath,
       host: { ...host },
       project: { ...project },
       threadId: alternateThreadId,
@@ -655,7 +709,7 @@ done
 
     await seedGatewayThread(page, {
       hostId: host.id,
-      projectId: project.id,
+      cwd: project.remotePath,
       host: { ...host },
       project: { ...project },
       threadId,

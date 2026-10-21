@@ -3,7 +3,6 @@ import type {
   BrowserPreviewSessionSnapshot,
   BrowserPreviewResourceFailure,
   ThreadHistoryItem,
-  ThreadHistoryTurn,
   RealtimeServerMessage,
   ServerNotification,
   ThreadSettingsState,
@@ -15,7 +14,6 @@ import type {
   HostMetricsSample,
   TmuxSessionsSnapshot,
 } from "~~/shared/types";
-import type { AppServerEventParams } from "~~/shared/thread-history/app-server-event-handlers/types";
 import type { ThreadRuntimeStatus } from "./types";
 import { EventEmitter } from "@posva/event-emitter";
 
@@ -25,11 +23,13 @@ type RealtimeMessage<T extends RealtimeServerMessage["type"]> = Extract<
 >;
 
 export type GatewayDomainEventMap = {
-  "gateway-session-reset": Record<never, never>;
+  // EventEmitter 2 supports argument tuples. [] means no payload; Record<never, never> becomes
+  // {}, which accepts every non-nullish primitive and does not actually enforce an empty object.
+  "gateway-session-reset": [];
   "gateway-config-applied": { config: GatewayConfig };
   "host-removed": { hostId: number };
-  "pinned-threads-invalidated": Record<never, never>;
-  "realtime-reconnected": Record<never, never>;
+  "pinned-threads-invalidated": [];
+  "realtime-reconnected": [];
   "realtime-error-reported": {
     message: string;
     hostId: number | null;
@@ -60,6 +60,12 @@ export type GatewayDomainEventMap = {
     actionLabel: string;
   };
   "realtime-host-lifecycle": RealtimeMessage<"host.lifecycle">;
+  "realtime-host-mfa-request": {
+    hostId: number;
+    name: string;
+    instructions: string;
+    prompts: Array<{ prompt: string; echo?: boolean }>;
+  };
   "realtime-host-metrics-snapshot": {
     hostId: number;
     status: HostMetricsCollectorStatus;
@@ -108,7 +114,7 @@ export type GatewayDomainEventMap = {
   };
   "file-watch-closed": {
     hostId: number;
-    projectId: number;
+    cwd: string;
     threadId: string;
   };
   "thread-settings-detected": {
@@ -122,42 +128,6 @@ export type GatewayDomainEventMap = {
     tokenUsage: ThreadTokenUsageState;
   };
   "history-item-upsert": { hostId: number; threadId: string; item: ThreadHistoryItem };
-  "history-agent-delta": { hostId: number; threadId: string; params: AppServerEventParams };
-  "history-plan-delta": { hostId: number; threadId: string; params: AppServerEventParams };
-  "history-reasoning-summary-delta": {
-    hostId: number;
-    threadId: string;
-    params: AppServerEventParams;
-  };
-  "history-reasoning-text-delta": {
-    hostId: number;
-    threadId: string;
-    params: AppServerEventParams;
-  };
-  "history-command-output-delta": {
-    hostId: number;
-    threadId: string;
-    params: AppServerEventParams;
-  };
-  "history-server-request-resolved": {
-    hostId: number;
-    threadId: string;
-    requestId: string | number;
-  };
-  "history-turn-diff-updated": {
-    hostId: number;
-    threadId: string;
-    params: AppServerEventParams;
-  };
-  "history-turn-appended": { hostId: number; threadId: string; turn: ThreadHistoryTurn };
-  "history-turn-synced": { hostId: number; threadId: string; turn: ThreadHistoryTurn };
-  "history-response-usage-upsert": {
-    hostId: number;
-    threadId: string;
-    turnId: string;
-    responseId: string;
-    amount: string;
-  };
 };
 
 export const gatewayDomainEvents = new EventEmitter<GatewayDomainEventMap>();

@@ -7,7 +7,7 @@ let database: DatabaseSync | null = null;
 let ready = false;
 const readyCallbacks = new Set<() => void>();
 
-function gatewayDatabasePath() {
+export function gatewayDatabasePath() {
   return resolve(trimmedOrFallback(process.env.CODEX_GATEWAY_DB_PATH, "/data/codex-gateway.db"));
 }
 
@@ -95,11 +95,34 @@ function migrate(db: DatabaseSync) {
       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
+    CREATE TABLE IF NOT EXISTS host_auth_capabilities (
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      host_id INTEGER NOT NULL,
+      host_fingerprint TEXT NOT NULL,
+      requires_keyboard_interactive INTEGER NOT NULL DEFAULT 0,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (user_id, host_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS web_push_keys (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      encrypted_keys TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS web_push_subscriptions (
+      endpoint_hash TEXT PRIMARY KEY,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      session_token_hash TEXT NOT NULL REFERENCES sessions(token_hash) ON DELETE CASCADE,
+      encrypted_subscription TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_web_push_subscriptions_user
+      ON web_push_subscriptions(user_id);
+
     CREATE TABLE IF NOT EXISTS tmux_monitors (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
       host_id INTEGER NOT NULL,
-      project_id INTEGER,
       thread_id TEXT,
       thread_title TEXT,
       session_name TEXT NOT NULL,
@@ -126,10 +149,18 @@ function migrate(db: DatabaseSync) {
 
     CREATE INDEX IF NOT EXISTS idx_sessions_token_hash ON sessions(token_hash);
     CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at);
+    CREATE INDEX IF NOT EXISTS idx_host_auth_capabilities_user
+      ON host_auth_capabilities(user_id, host_id);
     CREATE INDEX IF NOT EXISTS idx_tmux_monitors_host
       ON tmux_monitors(user_id, host_id, status, created_at DESC);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_tmux_monitors_active_location
       ON tmux_monitors(user_id, host_id, session_name, window_index, pane_index)
       WHERE status = 'active';
   `);
+  // The directory catalog is no longer durable Gateway state. Existing monitors keep their
+  // host/thread binding; only the obsolete local project reference is removed on startup.
+  const monitorColumns = db.prepare("PRAGMA table_info(tmux_monitors)").all();
+  if (monitorColumns.some((column) => column.name === "project_id")) {
+    db.exec("ALTER TABLE tmux_monitors DROP COLUMN project_id");
+  }
 }

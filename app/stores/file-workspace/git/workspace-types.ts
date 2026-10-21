@@ -2,7 +2,7 @@ import type { RemoteGitWorkspaceFile, RemoteGitWorkspaceSnapshot } from "~~/shar
 
 export interface GitWorkspaceScopeInput {
   hostId: number;
-  projectId: number;
+  cwd: string;
   rootPath: string;
 }
 

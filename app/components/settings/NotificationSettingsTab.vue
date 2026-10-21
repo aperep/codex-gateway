@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { BellIcon, Loader2Icon } from "@lucide/vue";
 import { computed, ref, watch } from "vue";
-import type { GatewayNotificationSettings } from "~~/shared/types";
 import { Button } from "@codex-gateway/ui/button";
 import { Input } from "@codex-gateway/ui/input";
 import { Label } from "@codex-gateway/ui/label";
@@ -9,33 +8,44 @@ import { Switch } from "@codex-gateway/ui/switch";
 import { useGatewayConfigStore } from "@/stores/gateway-config";
 import { normalizeNotificationSettings } from "@/stores/gateway/config";
 import { errorMessageLabels, messageFromError } from "@/stores/gateway/thread-utils/identity";
+import WebPushSettings from "./notifications/WebPushSettings.vue";
 
 const store = useGatewayConfigStore();
 const { t } = useI18n();
 const errorLabels = computed(() => errorMessageLabels(t));
 const saving = ref(false);
 const error = ref("");
-const form = ref<GatewayNotificationSettings>(normalizeNotificationSettings());
+const bark = ref(normalizeNotificationSettings().bark);
 const barkGroup = computed({
-  get: () => form.value.bark.group ?? "",
+  get: () => bark.value.group ?? "",
   set: (value: string | number) => {
-    form.value.bark.group = String(value).trim() || null;
+    bark.value.group = String(value).trim() || null;
   },
 });
 
 watch(
-  () => store.gatewayConfig.notifications,
-  (settings) => {
-    form.value = normalizeNotificationSettings(settings);
+  // Web Push saves immediately. Watch Bark's individual persisted fields so those saves do
+  // not reset unsaved Bark edits merely because the server returns a new config object.
+  [
+    () => store.gatewayConfig.notifications?.bark.enabled,
+    () => store.gatewayConfig.notifications?.bark.serverUrl,
+    () => store.gatewayConfig.notifications?.bark.deviceKey,
+    () => store.gatewayConfig.notifications?.bark.group,
+  ],
+  () => {
+    bark.value = normalizeNotificationSettings(store.gatewayConfig.notifications).bark;
   },
-  { immediate: true, deep: true },
+  { immediate: true },
 );
 
 async function saveSettings() {
   error.value = "";
   saving.value = true;
   try {
-    await store.saveNotificationSettings(form.value);
+    await store.saveNotificationSettings({
+      ...normalizeNotificationSettings(store.gatewayConfig.notifications),
+      bark: bark.value,
+    });
   } catch (caught: unknown) {
     error.value = messageFromError(
       caught,
@@ -53,12 +63,14 @@ async function saveSettings() {
     <div class="space-y-1">
       <div class="flex items-center gap-2 font-medium">
         <BellIcon class="size-4 text-ink-muted" />
-        {{ t("app.barkNotifications") }}
+        {{ t("app.notificationChannels") }}
       </div>
       <p class="text-sm text-ink-secondary">
-        {{ t("app.barkNotificationsDescription") }}
+        {{ t("app.notificationChannelsDescription") }}
       </p>
     </div>
+
+    <WebPushSettings />
 
     <div class="rounded-xl border border-hairline bg-canvas-soft/70 p-4">
       <div class="flex items-center justify-between gap-4">
@@ -66,7 +78,7 @@ async function saveSettings() {
           <Label for="bark-enabled">{{ t("app.enableBark") }}</Label>
           <p class="text-sm text-ink-secondary">{{ t("app.enableBarkDescription") }}</p>
         </div>
-        <Switch id="bark-enabled" v-model="form.bark.enabled" />
+        <Switch id="bark-enabled" v-model="bark.enabled" />
       </div>
     </div>
 
@@ -75,7 +87,7 @@ async function saveSettings() {
         <Label for="bark-server-url">{{ t("app.barkServerUrl") }}</Label>
         <Input
           id="bark-server-url"
-          v-model="form.bark.serverUrl"
+          v-model="bark.serverUrl"
           autocomplete="off"
           inputmode="url"
           placeholder="https://api.day.app"
@@ -85,7 +97,7 @@ async function saveSettings() {
         <Label for="bark-device-key">{{ t("app.barkDeviceKey") }}</Label>
         <Input
           id="bark-device-key"
-          v-model="form.bark.deviceKey"
+          v-model="bark.deviceKey"
           autocomplete="off"
           type="password"
           :placeholder="t('app.barkDeviceKeyPlaceholder')"

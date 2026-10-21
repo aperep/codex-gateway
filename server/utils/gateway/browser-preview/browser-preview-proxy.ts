@@ -131,7 +131,7 @@ function publishUpstreamFailureResponse(
     userId: session.userId,
     hostId: session.host.id,
     hostName: session.host.name,
-    projectId: session.targetConfig.projectId ?? null,
+    cwd: session.targetConfig.cwd ?? null,
     threadId: session.targetConfig.threadId ?? null,
     sessionId: session.sessionId,
     targetOrigin: session.target.origin,

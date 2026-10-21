@@ -1,6 +1,5 @@
 import { posix } from "node:path";
 import type {
-  ProjectRecord,
   RemoteGitFileBaseline,
   RemoteGitFileComparison,
   RemoteGitFileStatus,
@@ -11,6 +10,7 @@ import { remoteLoginShellCommand } from "../ssh/remote-command";
 import { shellQuote } from "../ssh/shell";
 import type { SshConnectionPool } from "../ssh/ssh-connection";
 import type { HostWithSecret } from "../ssh/ssh-types";
+import { gatewayLog } from "../../logging";
 import { KeyedTaskLimiter } from "../concurrency/keyed-task-limiter";
 import { parseGitStatusRecords } from "./git-status-parser";
 
@@ -40,11 +40,11 @@ export class RemoteGitFileService {
 
   async compare(
     host: HostWithSecret,
-    project: ProjectRecord,
+    cwd: string,
     requestedPath: string,
   ): Promise<RemoteGitFileComparison> {
     const path = posix.normalize(requestedPath.trim());
-    const projectPath = posix.normalize(project.remotePath.trim());
+    const projectPath = posix.normalize(cwd.trim());
     if (!path.startsWith("/") || !projectPath.startsWith("/")) {
       return { availability: "outsideWorktree" };
     }
@@ -77,11 +77,11 @@ export class RemoteGitFileService {
 
   async inspectWorkspace(
     host: HostWithSecret,
-    project: ProjectRecord,
+    cwd: string,
     requestedRootPath: string,
   ): Promise<RemoteGitWorkspaceSnapshot> {
     const rootPath = posix.normalize(requestedRootPath.trim());
-    const projectPath = posix.normalize(project.remotePath.trim());
+    const projectPath = posix.normalize(cwd.trim());
     if (!rootPath.startsWith("/") || !projectPath.startsWith("/")) {
       return { availability: "outsideWorktree" };
     }
@@ -202,7 +202,7 @@ function reportGitCommandFailure(
   stderr: string,
 ) {
   const detail = stderr.trim();
-  console.error("[gateway] remote Git command failed", {
+  gatewayLog("error", "gateway", "remote Git command failed", {
     hostId: host.id,
     hostName: host.name,
     operation,

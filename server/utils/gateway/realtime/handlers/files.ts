@@ -2,7 +2,6 @@ import type { HostRecord, RealtimeClientMessage } from "~~/shared/types";
 import { threadBroker } from "../../runtime/broker";
 import { requireRecord } from "../../http/validation/common";
 import { hostStore } from "../../state/hosts";
-import { projectStore } from "../../state/projects";
 import { sendRealtimePeerMessage, stateFor, type RealtimePeer } from "../peer-state";
 import { removeOwnedSubscription, replaceOwnedSubscription } from "../subscription-map";
 
@@ -10,10 +9,10 @@ export async function searchProjectFiles(
   peer: RealtimePeer,
   request: Extract<RealtimeClientMessage, { type: "file.search" }>,
 ) {
-  const { host, project } = requiredProjectScope(request.hostId, request.projectId);
+  const host = requireRecord(hostStore.getWithSecret(request.hostId), "Host not found");
   const result = await threadBroker.searchProjectFiles(
     host,
-    project.remotePath,
+    request.cwd,
     request.query,
     request.cancellationToken,
   );
@@ -21,7 +20,7 @@ export async function searchProjectFiles(
     type: "file.search.results",
     requestId: request.requestId,
     hostId: host.id,
-    projectId: project.id,
+    cwd: request.cwd,
     result,
   });
 }
@@ -30,10 +29,10 @@ export async function subscribeProjectFiles(
   peer: RealtimePeer,
   request: Extract<RealtimeClientMessage, { type: "file.watch.subscribe" }>,
 ) {
-  const { host, project } = requiredProjectScope(request.hostId, request.projectId);
-  const key = fileWatchScopeKey(request.hostId, request.projectId, request.threadId);
+  const host = requireRecord(hostStore.getWithSecret(request.hostId), "Host not found");
+  const key = fileWatchScopeKey(request.hostId, request.cwd, request.threadId);
   const subscriptions = stateFor(peer).fileWatchUnsubscribers;
-  const paths = watchedProjectPaths(project.remotePath, request.paths);
+  const paths = watchedProjectPaths(request.cwd, request.paths);
 
   let active = true;
   let releaseLeases = () => {};
@@ -57,9 +56,9 @@ export async function subscribeProjectFiles(
         sendRealtimePeerMessage(peer, {
           type: "file.watch.changed",
           hostId: host.id,
-          projectId: project.id,
+          cwd: request.cwd,
           threadId: request.threadId,
-          rootPath: project.remotePath,
+          rootPath: request.cwd,
           paths: event.paths,
         });
         return;
@@ -70,7 +69,7 @@ export async function subscribeProjectFiles(
       sendRealtimePeerMessage(peer, {
         type: "file.watch.closed",
         hostId: host.id,
-        projectId: project.id,
+        cwd: request.cwd,
         threadId: request.threadId,
       });
     });
@@ -83,9 +82,9 @@ export async function subscribeProjectFiles(
       type: "file.watch.ready",
       requestId: request.requestId,
       hostId: host.id,
-      projectId: project.id,
+      cwd: request.cwd,
       threadId: request.threadId,
-      rootPath: project.remotePath,
+      rootPath: request.cwd,
       paths,
     });
   } catch (error) {
@@ -130,20 +129,11 @@ export function unsubscribeProjectFiles(
   // request must not cancel the current editor subscription for the same thread scope.
   removeOwnedSubscription(
     stateFor(peer).fileWatchUnsubscribers,
-    fileWatchScopeKey(request.hostId, request.projectId, request.threadId),
+    fileWatchScopeKey(request.hostId, request.cwd, request.threadId),
     request.subscriptionId,
   );
 }
 
-function requiredProjectScope(hostId: number, projectId: number) {
-  const host = requireRecord(hostStore.getWithSecret(hostId), "Host not found");
-  const project = requireRecord(projectStore.get(projectId), "Project not found");
-  if (project.hostId !== host.id) {
-    throw new Error(`Project ${project.id} does not belong to host ${host.id}`);
-  }
-  return { host, project };
-}
-
-function fileWatchScopeKey(hostId: number, projectId: number, threadId: string) {
-  return `${hostId}:${projectId}:${threadId}`;
+function fileWatchScopeKey(hostId: number, cwd: string, threadId: string) {
+  return JSON.stringify([hostId, cwd, threadId]);
 }

@@ -8,7 +8,7 @@ import { createThreadPinningActions } from "./actions/thread-pinning";
 
 const emptySelection = (): GatewayRouteSelection => ({
   hostId: null,
-  projectId: null,
+  cwd: null,
   threadId: null,
 });
 
@@ -19,7 +19,7 @@ export const useGatewayNavigationStore = defineStore("gateway-navigation", () =>
   );
   const threads = ref<GatewayThread[]>([]);
   const selectedHostId = ref<number | null>(null);
-  const selectedProjectId = ref<number | null>(null);
+  const selectedCwd = ref<string | null>(null);
   const selectedThreadId = ref<string | null>(null);
   const openingPinnedThreadKey = ref<string | null>(null);
   const actions = {
@@ -34,7 +34,7 @@ export const useGatewayNavigationStore = defineStore("gateway-navigation", () =>
   function resetState() {
     threads.value = [];
     selectedHostId.value = null;
-    selectedProjectId.value = null;
+    selectedCwd.value = null;
     selectedThreadId.value = null;
     openingPinnedThreadKey.value = null;
   }
@@ -43,7 +43,7 @@ export const useGatewayNavigationStore = defineStore("gateway-navigation", () =>
     lastOpenThread: skipHydrate(lastOpenThread),
     threads,
     selectedHostId,
-    selectedProjectId,
+    selectedCwd,
     selectedThreadId,
     openingPinnedThreadKey,
     rememberOpenThread,

@@ -46,6 +46,7 @@ export async function refreshRunningThreadsForHost({
           {
             host,
             client,
+            providerId: "codex",
             hasController: (threadId) => threadBroker.hasController(host.id, threadId),
           },
           candidate.threadId,
@@ -79,7 +80,6 @@ function runningThreadCandidates(hostId: number, options: { staleOnly: boolean; 
     .map((record) => {
       return {
         threadId: record.threadId,
-        projectId: record.snapshot.projectId ?? null,
         runtimeStatus: runtimeStatusFromSnapshotState(
           record.snapshot.thread,
           record.snapshot.history,

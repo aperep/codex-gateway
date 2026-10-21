@@ -1,10 +1,12 @@
 import { Client } from "ssh2";
+import { shellQuote } from "../../../server/utils/gateway/infra/ssh/shell";
 
 export interface SshTestTarget {
   host: string;
   port: string | number;
   username: string;
   password: string;
+  keyboardInteractiveCode?: string;
 }
 
 export async function connectTestSsh(target: SshTestTarget) {
@@ -13,20 +15,30 @@ export async function connectTestSsh(target: SshTestTarget) {
     client
       .on("ready", () => resolve(client))
       .on("error", reject)
+      .on("keyboard-interactive", (_name, _instructions, _lang, prompts, finish) => {
+        const code = target.keyboardInteractiveCode;
+        // SSH servers may emit a zero-prompt info request after the PAM challenge. Match the
+        // protocol's prompt cardinality instead of manufacturing another answer.
+        finish(code === undefined ? [] : prompts.map(() => code));
+      })
       .connect({
         host: target.host,
         port: Number(target.port),
         username: target.username,
-        password: target.password,
+        ...(target.keyboardInteractiveCode === undefined ? { password: target.password } : {}),
         readyTimeout: 10_000,
+        tryKeyboard: target.keyboardInteractiveCode !== undefined,
       });
   });
 }
 
 export async function execTestSsh(connection: Client, command: string) {
+  // Fixture setup scripts use POSIX semantics (including splitting PID lists for kill). Execute
+  // them explicitly with sh: a real user's zsh login shell does not enable SH_WORD_SPLIT. The
+  // browser still exercises Gateway's own login-shell wrapper against that user's actual shell.
   const result = await new Promise<{ code: number | null; stdout: string; stderr: string }>(
     (resolve, reject) => {
-      connection.exec(command, (error, channel) => {
+      connection.exec(`exec /bin/sh -c ${shellQuote(command)}`, (error, channel) => {
         if (error) return reject(error);
         let stdout = "";
         let stderr = "";

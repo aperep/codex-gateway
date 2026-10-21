@@ -1,9 +1,8 @@
 import { CodexArtifactProvider, type CodexArtifactBundle } from "./codex-artifacts";
 import { parseCodexRemotePlatform } from "./codex-platform";
 import {
-  codexRemoteOfflineInstallPayload,
-  codexRemoteNodeRuntimeProbePayload,
   codexRemotePlatformProbePayload,
+  codexRemoteStandaloneInstallPayload,
 } from "./codex-upgrade-remote";
 import { parseCodexVersion } from "./codex-version";
 import { remoteLoginShellCommand } from "../ssh/remote-command";
@@ -11,6 +10,7 @@ import type { SshConnectionPool } from "../ssh/ssh-connection";
 import type { CommandResult, HostWithSecret } from "../ssh/ssh-types";
 import { codexUpgradeError, codexUpgradeLog } from "./codex-upgrade-log";
 import { CodexUpgradeResources } from "./codex-upgrade-resources";
+import { hostUpgradeState } from "../../state/host-upgrades";
 
 const UPGRADE_IDLE_TIMEOUT_MS = 90_000;
 const UPGRADE_TOTAL_TIMEOUT_MS = 10 * 60_000;
@@ -36,62 +36,31 @@ export class CodexUpgrader {
     resources: CodexUpgradeResources,
     attempt: number,
   ) {
-    return await this.withPreparedUpgrade(host, version, resources, attempt, (install) =>
-      install(),
-    );
-  }
-
-  async withPreparedUpgrade<T>(
-    host: HostWithSecret,
-    version: string,
-    resources: CodexUpgradeResources,
-    attempt: number,
-    callback: (install: () => Promise<string>) => Promise<T>,
-  ) {
     if (resources.artifactLease !== null) {
       const artifacts = resources.artifactLease.artifacts;
-      return await callback(() => this.installOnce(host, version, artifacts, attempt, resources));
+      return await this.installOnce(host, version, artifacts, attempt, resources);
     }
     const platformProbeStartedAt = Date.now();
     codexUpgradeLog("remote platform probe started", host, { targetVersion: version });
     const platform = await this.readRemotePlatform(host);
     codexUpgradeLog("remote platform probe completed", host, {
       targetVersion: version,
-      platformPackage: platform.packageName,
+      releaseTarget: platform.releaseTarget,
       durationMs: Date.now() - platformProbeStartedAt,
-    });
-    const nodeProbeStartedAt = Date.now();
-    codexUpgradeLog("remote Node.js probe started", host, { targetVersion: version });
-    const includeNode = await this.requiresNodeBootstrap(host);
-    codexUpgradeLog("remote Node.js probe completed", host, {
-      targetVersion: version,
-      bootstrapRequired: includeNode,
-      durationMs: Date.now() - nodeProbeStartedAt,
     });
     const artifactStartedAt = Date.now();
     codexUpgradeLog("artifact preparation started", host, {
       targetVersion: version,
-      platformPackage: platform.packageName,
-      includeNode,
+      releaseTarget: platform.releaseTarget,
     });
-    resources.artifactLease = await artifactProvider.acquire(version, platform, { includeNode });
+    resources.artifactLease = await artifactProvider.acquire(version, platform);
     const artifacts = resources.artifactLease.artifacts;
     codexUpgradeLog("artifact preparation completed", host, {
       targetVersion: version,
       durationMs: Date.now() - artifactStartedAt,
-      codexArchiveBytes: artifacts.cacheArchive.size,
-      nodeArchiveBytes: artifacts.nodeArchive?.size ?? 0,
+      codexArchiveBytes: artifacts.standaloneArchive.size,
     });
-    return await callback(() => this.installOnce(host, version, artifacts, attempt, resources));
-  }
-
-  private async requiresNodeBootstrap(host: HostWithSecret) {
-    const result = await this.ssh.exec(
-      host,
-      remoteLoginShellCommand(codexRemoteNodeRuntimeProbePayload()),
-      { timeoutMs: 30_000 },
-    );
-    return result.code !== 0;
+    return await this.installOnce(host, version, artifacts, attempt, resources);
   }
 
   private async readRemotePlatform(host: HostWithSecret) {
@@ -115,35 +84,43 @@ export class CodexUpgrader {
   ) {
     const attemptStartedAt = Date.now();
     codexUpgradeLog("installation attempt started", host, { targetVersion: version, attempt });
-    const stagePath = await resources.stage();
+    const stagePath = await resources.stage(artifacts.standaloneArchive.sha256);
     try {
-      const nodeArtifact = artifacts.nodeArchive;
-      if (nodeArtifact !== null) {
-        await this.uploadArtifact(host, "node runtime", nodeArtifact.size, () =>
+      await this.uploadArtifact(
+        host,
+        "Codex standalone archive",
+        artifacts.standaloneArchive.size,
+        () =>
           this.ssh.uploadFileResumable(
             host,
-            nodeArtifact.localPath,
-            `${stagePath}/${nodeArtifact.fileName}`,
+            artifacts.standaloneArchive.localPath,
+            `${stagePath}/${artifacts.standaloneArchive.fileName}`,
+            (progress) =>
+              hostUpgradeState.update(host, {
+                bytes: progress.bytes,
+                totalBytes: progress.totalBytes,
+              }),
           ),
-        );
-      }
-      await this.uploadArtifact(host, "Codex npm cache", artifacts.cacheArchive.size, () =>
-        this.ssh.uploadFileResumable(
-          host,
-          artifacts.cacheArchive.localPath,
-          `${stagePath}/${artifacts.cacheArchive.fileName}`,
-        ),
       );
+      hostUpgradeState.update(host, { phase: "installing" });
       const remoteInstallStartedAt = Date.now();
-      codexUpgradeLog("remote npm install started", host, { targetVersion: version, attempt });
+      codexUpgradeLog("remote standalone install started", host, {
+        targetVersion: version,
+        attempt,
+      });
       const result = await this.execInstallCommand(
         host,
         remoteLoginShellCommand(
-          codexRemoteOfflineInstallPayload({ version, stagePath, artifacts }),
+          codexRemoteStandaloneInstallPayload({
+            version,
+            releaseTarget: artifacts.releaseTarget,
+            stagePath,
+            artifacts,
+          }),
         ),
       );
       if (result.code !== 0) throw new Error(upgradeFailureMessage(result));
-      codexUpgradeLog("remote npm install completed", host, {
+      codexUpgradeLog("remote standalone install completed", host, {
         targetVersion: version,
         attempt,
         durationMs: Date.now() - remoteInstallStartedAt,
@@ -176,6 +153,7 @@ export class CodexUpgrader {
     upload: () => Promise<string>,
   ) {
     const startedAt = Date.now();
+    hostUpgradeState.update(host, { phase: "uploading", bytes: 0, totalBytes: bytes });
     codexUpgradeLog("artifact upload started", host, { artifact, bytes });
     await upload();
     codexUpgradeLog("artifact upload completed", host, {
@@ -213,7 +191,6 @@ export class CodexUpgrader {
       const resetIdleTimer = () => {
         if (idleTimer !== null) clearTimeout(idleTimer);
         idleTimer = setTimeout(() => {
-          this.ssh.disconnectHost(host);
           channel.close();
           settle(() =>
             reject(
@@ -233,7 +210,6 @@ export class CodexUpgrader {
 
       resetIdleTimer();
       totalTimer = setTimeout(() => {
-        this.ssh.disconnectHost(host);
         channel.close();
         settle(() => reject(new Error("Timed out installing remote Codex after 10m total")));
       }, UPGRADE_TOTAL_TIMEOUT_MS);

@@ -1,7 +1,13 @@
 import type { HostWithSecret } from "./ssh-types";
+import { gatewayLog } from "../../logging";
 
 const UPLOAD_IDLE_TIMEOUT_MS = 120_000;
 const PROGRESS_LOG_INTERVAL_MS = 30_000;
+
+export interface SftpUploadProgress {
+  bytes: number;
+  totalBytes: number;
+}
 
 interface UploadMonitor {
   signal: AbortSignal;
@@ -14,6 +20,7 @@ export async function withSftpUploadProgress(
   totalBytes: number,
   closeChannel: () => void,
   upload: (monitor: UploadMonitor) => Promise<void>,
+  onProgress?: (progress: SftpUploadProgress) => void,
 ) {
   const controller = new AbortController();
   const idle = Promise.withResolvers<never>();
@@ -40,14 +47,15 @@ export async function withSftpUploadProgress(
       lastProgressAt = Date.now();
     }
     if (Date.now() - lastLogAt >= PROGRESS_LOG_INTERVAL_MS) {
-      console.info("[gateway-ssh] SFTP upload progress", details());
+      gatewayLog("info", "gateway-ssh", "SFTP upload progress", details());
+      onProgress?.(details());
       lastLogAt = Date.now();
     }
     if (Date.now() - lastProgressAt >= UPLOAD_IDLE_TIMEOUT_MS) {
       const error = new Error(
         `SFTP upload timed out in ${phase} after 120s without progress (${bytes}/${totalBytes} bytes)`,
       );
-      console.warn("[gateway-ssh] SFTP upload stalled", details());
+      gatewayLog("warn", "gateway-ssh", "SFTP upload stalled", details());
       // Settle with the retryable timeout before pipeline emits its generic AbortError. Abort plus
       // the checks after each await prevent a late callback from starting writes in a retired attempt.
       idle.reject(error);
@@ -72,10 +80,13 @@ export async function withSftpUploadProgress(
           readBytes = readAcknowledgedBytes;
           bytes = readBytes();
           lastProgressAt = Date.now();
-          console.info("[gateway-ssh] SFTP upload resumed", details());
+          gatewayLog("info", "gateway-ssh", "SFTP upload offset", details());
+          onProgress?.(details());
         },
       }),
     ]);
+    bytes = readBytes();
+    onProgress?.(details());
   } finally {
     clearInterval(timer);
   }

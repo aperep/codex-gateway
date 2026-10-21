@@ -1,7 +1,6 @@
 import { gatewayApi } from "@/utils/gateway-api";
 import type { GatewayThread } from "~~/shared/types";
 import { useGatewayCatalogStore } from "@/stores/gateway-catalog";
-import { projectById } from "@/stores/gateway-catalog/selectors";
 import { useGatewayConfigStore } from "@/stores/gateway-config";
 import { useGatewayBootstrapStore } from "@/stores/gateway-bootstrap";
 import { useGatewayNavigationStore } from "@/stores/gateway-navigation";
@@ -23,7 +22,6 @@ export function createThreadListActions() {
     });
     if (!sessionIsCurrent()) return false;
     if (response.projects !== undefined) catalog.mergeProjects(response.projects);
-    applyProjectDirectoryAvailability(response);
     useGatewayThreadActivityStore().ingestGatewayThreads(response.data ?? [], catalog.projects);
     syncThreadStatusesFromList(hostId, response.data ?? []);
     return true;
@@ -52,7 +50,7 @@ export function createThreadListActions() {
         }),
       );
       if (!sessionIsCurrent()) return;
-      config.setCatalog(catalog.hosts, catalog.projects);
+      config.setCatalog(catalog.hosts);
     },
     refreshHostProjects: loadHostOverview,
     async listThreads(searchTerm = "") {
@@ -62,23 +60,19 @@ export function createThreadListActions() {
       const navigation = useGatewayNavigationStore();
       const views = useGatewayThreadViewStore();
       const hostId = navigation.selectedHostId;
-      const projectId = navigation.selectedProjectId;
-      const projectCwd = projectById(catalog.projects, projectId)?.remotePath;
+      const cwd = navigation.selectedCwd;
       if (hostId === null) return;
       const sessionIsCurrent = captureSessionEpoch();
       views.loading = true;
       bootstrap.clearError();
       try {
         const query: Record<string, unknown> = { hostId, limit: 50 };
-        if (projectId !== null) query.projectId = projectId;
-        if (projectCwd !== undefined && projectCwd !== "") query.cwd = projectCwd;
+        if (cwd !== null && cwd !== "") query.cwd = cwd;
         if (searchTerm !== "") query.searchTerm = searchTerm;
         const response = await gatewayApi<ThreadListResponse>("/api/threads", { query });
         if (!sessionIsCurrent()) return;
-        if (navigation.selectedHostId !== hostId || navigation.selectedProjectId !== projectId)
-          return;
+        if (navigation.selectedHostId !== hostId || navigation.selectedCwd !== cwd) return;
         if (response.projects !== undefined) catalog.mergeProjects(response.projects);
-        applyProjectDirectoryAvailability(response);
         useGatewayThreadActivityStore().ingestGatewayThreads(response.data ?? [], catalog.projects);
         catalog.setHostConnectionStatus(hostId, "connected");
         syncThreadStatusesFromList(hostId, response.data ?? []);
@@ -92,37 +86,27 @@ export function createThreadListActions() {
         // browser config here: doing so creates two pin authorities and makes cross-tab updates
         // dependent on which request happened last.
         navigation.threads = sortThreads(mainThreads);
-        config.setCatalog(catalog.hosts, catalog.projects);
+        config.setCatalog(catalog.hosts);
       } catch (error: unknown) {
         if (!sessionIsCurrent()) return;
-        if (navigation.selectedHostId !== hostId || navigation.selectedProjectId !== projectId)
-          return;
+        if (navigation.selectedHostId !== hostId || navigation.selectedCwd !== cwd) return;
         const message = messageFromError(
           error,
           bootstrap.t("app.listThreadsFailed"),
           bootstrap.errorLabels,
         );
         catalog.setHostConnectionStatus(hostId, "failed", message);
-        bootstrap.setError(message, { hostId, projectId, threadId: navigation.selectedThreadId });
+        bootstrap.setError(message, { hostId, cwd, threadId: navigation.selectedThreadId });
       } finally {
         if (
           sessionIsCurrent() &&
           navigation.selectedHostId === hostId &&
-          navigation.selectedProjectId === projectId
+          navigation.selectedCwd === cwd
         ) {
           views.loading = false;
         }
       }
     },
-  };
-}
-
-function applyProjectDirectoryAvailability(response: ThreadListResponse) {
-  if (response.projectDirectoryAvailability === undefined) return;
-  const catalog = useGatewayCatalogStore();
-  catalog.projectDirectoryAvailability = {
-    ...catalog.projectDirectoryAvailability,
-    ...response.projectDirectoryAvailability,
   };
 }
 

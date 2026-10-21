@@ -62,7 +62,7 @@ export function queueServerOverloadedRetryNotice(
     clearPendingTurnRequest(hostId, threadId);
     useGatewayBootstrapStore().setError(buildRetryExhaustedMessage(t, error, request.retryCount), {
       hostId,
-      projectId: request.projectId,
+      cwd: request.cwd,
       threadId,
     });
     return true;
@@ -157,14 +157,10 @@ async function retryStoredTurnRequest(t: Translate, hostId: number, threadId: st
 }
 
 async function executeStoredTurnRequest(t: Translate, request: SubmittedTurnRequestState) {
-  if (request.projectId === null) {
-    throw new Error(t("app.projectRequiredForFileReferences"));
-  }
   if (request.kind === "start") {
     await requestTurnStart({
       hostId: request.hostId,
       threadId: request.threadId,
-      projectId: request.projectId,
       text: request.text,
       clientUserMessageId: createClientUserMessageId("turn"),
       cwd: request.cwd,
@@ -182,7 +178,6 @@ async function executeStoredTurnRequest(t: Translate, request: SubmittedTurnRequ
   await requestTurnSteer({
     hostId: request.hostId,
     threadId: request.threadId,
-    projectId: request.projectId,
     expectedTurnId: activeTurnId,
     text: request.text,
     clientUserMessageId: createClientUserMessageId("steer"),
@@ -199,7 +194,7 @@ function handleRetryFailure(t: Translate, request: SubmittedTurnRequestState, er
   clearPendingTurnRequest(request.hostId, request.threadId);
   useGatewayBootstrapStore().setError(messageFromRetryFailure(t, request, error), {
     hostId: request.hostId,
-    projectId: request.projectId,
+    cwd: request.cwd,
     threadId: request.threadId,
   });
 }
@@ -207,7 +202,7 @@ function handleRetryFailure(t: Translate, request: SubmittedTurnRequestState, er
 function setThreadRetryError(t: Translate, request: SubmittedTurnRequestInput, attempt: number) {
   useGatewayBootstrapStore().setError(buildRetryingMessage(t, attempt), {
     hostId: request.hostId,
-    projectId: request.projectId,
+    cwd: request.cwd,
     threadId: request.threadId,
   });
 }

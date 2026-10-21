@@ -17,7 +17,9 @@ export function createThreadPinningActions() {
       const navigation = useGatewayNavigationStore();
       if (navigation.selectedHostId === null) return;
       const project = catalog.projects.find(
-        (candidate) => candidate.id === navigation.selectedProjectId,
+        (candidate) =>
+          candidate.hostId === navigation.selectedHostId &&
+          candidate.remotePath === navigation.selectedCwd,
       );
       const thread = navigation.threads.find((candidate) => String(candidate.id) === threadId);
       const key = pinnedKey(navigation.selectedHostId, threadId);
@@ -29,7 +31,6 @@ export function createThreadPinningActions() {
       );
       const nextPinnedThread: PinnedThreadRecord = previousPinnedThread ?? {
         hostId: navigation.selectedHostId,
-        projectId: navigation.selectedProjectId,
         threadId,
         title: titleForThread(thread),
         subtitle: project?.remotePath ?? null,
@@ -71,7 +72,6 @@ export function createThreadPinningActions() {
       try {
         await useGatewayThreadViewStore().openThread(thread.threadId, {
           hostId: thread.hostId,
-          projectId: thread.projectId,
         });
       } finally {
         if (sessionIsCurrent() && navigation.openingPinnedThreadKey === openingKey) {
@@ -92,10 +92,12 @@ export function createThreadPinningActions() {
       const pinnedThread = gateway.gatewayConfig.pinnedThreads[index];
       if (!pinnedThread) return;
       const project = catalog.projects.find(
-        (candidate) => candidate.id === navigation.selectedProjectId,
+        (candidate) => candidate.hostId === thread.hostId && candidate.remotePath === thread.cwd,
       );
       gateway.gatewayConfig.pinnedThreads[index] = {
         ...pinnedThread,
+        // These labels decorate a pin; only hostId + threadId identifies and opens the thread.
+        // Its working directory is read from Codex, never restored from the saved label.
         title: titleForThread(thread),
         projectName: project?.name ?? pinnedThread.projectName,
         subtitle: project?.remotePath ?? pinnedThread.subtitle,

@@ -2,7 +2,7 @@ import type { RemoteGitWorkspaceFile, RemoteGitWorkspaceSnapshot } from "~~/shar
 import type { GitWorkspaceScopeInput } from "./workspace-types";
 
 export function gitWorkspaceKey(input: GitWorkspaceScopeInput) {
-  return `${input.hostId}:${input.projectId}:${normalize(input.rootPath)}`;
+  return JSON.stringify([input.hostId, input.cwd, normalize(input.rootPath)]);
 }
 
 export function workspacePathForGitChange(

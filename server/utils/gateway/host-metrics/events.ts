@@ -29,12 +29,12 @@ export class HostMetricsEventBus {
     };
   }
 
-  publish(userId: number, hostId: number, event: HostMetricsEvent) {
-    for (const listener of this.listeners.get(metricsKey(userId, hostId)) ?? []) listener(event);
-  }
-
   hasSubscribers(userId: number, hostId: number) {
     return (this.listeners.get(metricsKey(userId, hostId))?.size ?? 0) > 0;
+  }
+
+  publish(userId: number, hostId: number, event: HostMetricsEvent) {
+    for (const listener of this.listeners.get(metricsKey(userId, hostId)) ?? []) listener(event);
   }
 }
 

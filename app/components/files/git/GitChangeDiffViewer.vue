@@ -21,7 +21,7 @@ import { gitStatusCode, gitStatusTextClass } from "@/utils/git-status-presentati
 
 const props = defineProps<{
   hostId: number;
-  projectId: number;
+  cwd: string;
   path: string;
   change: RemoteGitWorkspaceFile;
 }>();
@@ -34,7 +34,7 @@ const editorRef = ref<{ runCommand: (command: StateCommand) => boolean } | null>
 let controller: AbortController | null = null;
 const target = computed(() => ({
   hostId: props.hostId,
-  projectId: props.projectId,
+  cwd: props.cwd,
   path: props.path,
 }));
 const state = computed(() => comparisonStore.stateForTarget(target.value));
@@ -46,7 +46,7 @@ const loading = computed(() => state.value.loading || loadingContent.value);
 const error = computed(() => state.value.error ?? contentError.value);
 
 watch(
-  () => [props.hostId, props.projectId, props.path, props.change] as const,
+  () => [props.hostId, props.cwd, props.path, props.change] as const,
   () => void load(true),
   { immediate: true },
 );

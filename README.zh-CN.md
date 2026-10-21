@@ -127,7 +127,7 @@ Browser
 
 ## 功能
 
-- **服务端账号与配置**：手动创建用户，Bearer token 登录，host/project/thread 配置加密存储在 SQLite。
+- **服务端账号与配置**：手动创建用户，Bearer token 登录，主机、置顶对话和通知配置加密存储在 SQLite。目录分组从 Codex 对话的工作目录生成。
 - **远端主机**：支持 SSH password、private key、ssh-agent，以及可选 SSH proxy。
 - **Codex runtime 管理**：检测远端 Codex 版本，升级旧版本，重启 stale app-server，并自动重连。
 - **会话发现与恢复**：从远端状态发现 Codex 会话，打开 thread 时优先加载较小的缓存 turn 窗口。
@@ -142,7 +142,7 @@ Browser
 - **用户级 tmux 监控**：集中扫描所有已配置 Host 的 tmux session，查看最新 pane 输出，并把监控绑定到相关 Codex thread。一次性监控会在当前任务退出或回到 shell 时通知；永久监控会等待后续任务再次运行，并在每次运行结束后通知。活动监控和历史记录持久化到 SQLite。
 - **多客户端同步**：多个浏览器 tab 打开同一个 thread 时，通过 Gateway 接收同一条 app-server 事件流。
 - **状态修复**：SSH/app-server 重连后，Gateway 会刷新 running thread 状态；Nitro 定时任务也会扫描 stale running thread。
-- **可操作通知**：主 turn 或 tmux 任务完成时显示浏览器 Sonner 通知，并可选发送服务端 Bark 推送。点击 thread 通知可进入对应对话，点击 tmux 通知可打开对应监控和 pane 输出；通知按用户和完成事件去重。
+- **可操作通知**：主 turn、目标或 tmux 任务完成，以及需要用户回答时显示 Sonner 通知，并可选发送系统网页推送。网页推送优先，没有浏览器订阅或投递失败时再尝试 Bark。在“设置 → 通知”中授权每个浏览器；需要 HTTPS，iPhone/iPad 需先添加到主屏幕。推送订阅与 VAPID 密钥加密保存在 SQLite，退出登录会撤销该浏览器会话的订阅。点击 thread 通知可进入对应对话，通知按用户和完成事件去重。
 - **移动端布局**：响应式侧边栏、输入框、长按菜单和子代理面板。
 - **真实 E2E 覆盖**：Playwright 测试使用真实 Nuxt server、真实 SSH Docker target 和真实 Codex app-server。
 
@@ -203,7 +203,7 @@ pnpm test:e2e
 
 | 变量 | 是否必需 | 说明 |
 | --- | --- | --- |
-| `CODEX_GATEWAY_CONFIG_SECRET` | 生产环境必需 | 用于加密保存 host/project/thread 配置的稳定 secret。 |
+| `CODEX_GATEWAY_CONFIG_SECRET` | 生产环境必需 | 用于加密保存主机、置顶对话和通知配置的稳定 secret。 |
 | `CODEX_GATEWAY_DB_PATH` | 否 | SQLite 数据库路径。Docker 默认使用 `/data/codex-gateway.db`。 |
 | `HOST` | 否 | Nuxt 监听地址。Docker 使用 `0.0.0.0`。 |
 | `PORT` | 否 | Nuxt 监听端口。Docker 使用 `3000`。 |

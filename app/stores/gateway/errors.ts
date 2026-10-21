@@ -7,7 +7,7 @@ export type GatewayErrorKind = "appServerTurn" | "http" | "rpc" | "realtime" | "
 
 export interface GatewayErrorContext {
   hostId?: number | null;
-  projectId?: number | null;
+  cwd?: string | null;
   threadId?: string | null;
   turnId?: string | null;
 }
@@ -96,6 +96,7 @@ export function misalignmentDetailsFromNotification(
     errorType: stringValue(details.errorType),
     detailedExplanation: stringValue(details.detailedExplanation),
     steer: steerMessage === null ? null : { message: steerMessage },
+    reviewTarget: stringValue(details.reviewTarget),
   };
 }
 
@@ -105,7 +106,7 @@ export function unknownGatewayErrorFromError(
   labels: ErrorMessageLabels,
 ) {
   const payload = gatewayErrorPayload(error);
-  const message = gatewayErrorMessage(error, fallback);
+  const message = gatewayErrorMessage(error, fallback, labels);
   const details = payload?.details;
   if (details === null || typeof details !== "object") {
     return new UnknownGatewayDisplayError(message);

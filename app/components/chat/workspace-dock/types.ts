@@ -44,6 +44,6 @@ export interface WorkspaceDockProps {
 
 export interface WorkspacePanelSelection {
   selectedHostId: Ref<number | null> | ComputedRef<number | null>;
-  selectedProjectId: Ref<number | null> | ComputedRef<number | null>;
+  selectedCwd: Ref<string | null> | ComputedRef<string | null>;
   selectedThreadId: Ref<string | null> | ComputedRef<string | null>;
 }

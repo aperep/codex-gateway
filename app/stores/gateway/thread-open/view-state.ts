@@ -26,7 +26,7 @@ export function rememberOpenThread(threadId: string) {
   if (navigation.selectedHostId === null) return;
   navigation.rememberOpenThread({
     hostId: navigation.selectedHostId,
-    projectId: navigation.selectedProjectId,
+    cwd: navigation.selectedCwd,
     threadId,
   });
 }
@@ -40,25 +40,21 @@ export function syncSelectedRoute(options: { replace?: boolean } = {}) {
   writeGatewayRouteSelection(
     {
       hostId: navigation.selectedHostId,
-      projectId: navigation.selectedProjectId,
+      cwd: navigation.selectedCwd,
       threadId: navigation.selectedThreadId,
     },
     options,
   );
 }
 
-export function activateThreadView(hostId: number, projectId: number | null) {
+export function activateThreadView(hostId: number, cwd: string | null) {
   const navigation = useGatewayNavigationStore();
   navigation.selectedHostId = hostId;
-  navigation.selectedProjectId = projectId;
+  navigation.selectedCwd = cwd;
   clearCurrentThreadView();
 }
 
-export function activatePendingThreadView(
-  hostId: number,
-  projectId: number | null,
-  threadId: string,
-) {
-  activateThreadView(hostId, projectId);
+export function activatePendingThreadView(hostId: number, cwd: string | null, threadId: string) {
+  activateThreadView(hostId, cwd);
   useGatewayNavigationStore().selectedThreadId = threadId;
 }

@@ -14,7 +14,6 @@ interface FileDocumentActionsOptions {
   scopeFor: (hostId: number, threadId: string) => FileWorkspaceScope | null;
   setScopeRoot: (input: {
     hostId: number;
-    projectId: number | null;
     threadId: string;
     rootPath: string;
   }) => FileWorkspaceScope;
@@ -131,7 +130,7 @@ export function createFileDocumentActions(options: FileDocumentActionsOptions) {
     const scope = options.scopeFor(hostId, threadId);
     if (scope === null) return;
     for (const path of scope.openPaths) {
-      ensureDocument({ hostId, projectId: scope.projectId, threadId, path });
+      ensureDocument({ hostId, cwd: scope.rootPath, threadId, path });
     }
     if (scope.activePath !== null) await activateFile(hostId, threadId, scope.activePath);
   }
@@ -171,9 +170,8 @@ export function createFileDocumentActions(options: FileDocumentActionsOptions) {
       options.scopeFor(input.hostId, input.threadId) ??
       options.setScopeRoot({
         hostId: input.hostId,
-        projectId: input.projectId ?? null,
         threadId: input.threadId,
-        rootPath: parentPath(input.path),
+        rootPath: input.cwd ?? parentPath(input.path),
       })
     );
   }

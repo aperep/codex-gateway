@@ -1,6 +1,7 @@
 import {
   cleanupRealtimePeer,
   handleRealtimePeerMessage,
+  handleRealtimePeerBinaryMessage,
   openRealtimePeer,
 } from "../utils/gateway/realtime/connection";
 
@@ -10,7 +11,11 @@ export default defineWebSocketHandler({
   },
 
   async message(peer, message) {
-    await handleRealtimePeerMessage(peer, message.text());
+    if (typeof message.rawData === "string") {
+      await handleRealtimePeerMessage(peer, message.text());
+      return;
+    }
+    await handleRealtimePeerBinaryMessage(peer, message.uint8Array());
   },
 
   close(peer) {

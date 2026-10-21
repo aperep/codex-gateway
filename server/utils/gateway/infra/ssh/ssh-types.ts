@@ -36,9 +36,11 @@ export interface RemoteFileMetadata {
 
 export interface RemoteCodexVersionState {
   version: string;
+  installationLayout: CodexInstallationLayout;
   appServerVersion: string | null;
   supportedVersion: string;
   beforeVersion: string;
   upgraded: boolean;
-  deferredUpgrade?: boolean;
 }
+
+export type CodexInstallationLayout = "standalone" | "npm-or-external";

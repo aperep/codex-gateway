@@ -3,17 +3,21 @@ import { runWithGatewayUser } from "../state/memory";
 import type { OwnedSubscription } from "./subscription-map";
 
 export interface RealtimePeer {
-  send(message: string): void;
+  send(message: string | Uint8Array): void;
   close(code?: number, reason?: string): void;
   context: Record<string, unknown>;
+  bufferedAmount?: number;
+  waitForDrain?: (options?: { threshold?: number; signal?: AbortSignal }) => Promise<void>;
 }
 
 export interface RealtimePeerState {
   authenticated: boolean;
   userId: number | null;
+  sessionTokenHash: string | null;
   authTimer?: ReturnType<typeof setTimeout>;
   hostLifecycleUnsubscribe?: () => void;
   terminalUnsubscribe?: () => void;
+  terminalOutputStream?: { dispose: () => void };
   notificationUnsubscribe?: () => void;
   pinnedThreadsUnsubscribe?: () => void;
   threadRuntimeStatusUnsubscribe?: () => void;
@@ -24,6 +28,7 @@ export interface RealtimePeerState {
   hostMetricsUnsubscribers: Map<number, () => void>;
   tmuxSessionUnsubscribers: Map<number, () => void>;
   fileWatchUnsubscribers: Map<string, OwnedSubscription>;
+  hostMfaUnsubscribe?: () => void;
 }
 
 const peerStates = new WeakMap<RealtimePeer, RealtimePeerState>();
@@ -38,6 +43,7 @@ export function stateFor(peer: RealtimePeer) {
     state = {
       authenticated: false,
       userId: null,
+      sessionTokenHash: null,
       threadUnsubscribers: new Map(),
       hostMetricsUnsubscribers: new Map(),
       tmuxSessionUnsubscribers: new Map(),

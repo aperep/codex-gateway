@@ -1,6 +1,8 @@
-import type { GatewayEvent, ThreadHistoryState } from "~~/shared/types";
+import type { GatewayEvent, ThreadHistoryState, ThreadTimelineHistoryState } from "~~/shared/types";
 import { CLIENT_THREAD_CACHE_LIMIT } from "~~/shared/config";
 import { projectThreadTimelineHistory } from "~~/shared/thread-history/timeline";
+import { retainThreadHistory } from "~~/shared/thread-history/retention";
+import { retainThreadEvents } from "@/stores/gateway-thread-view/memory/events";
 import { useGatewayNavigationStore } from "@/stores/gateway-navigation";
 import { useGatewayThreadViewStore } from "@/stores/gateway-thread-view";
 import { pinnedKey } from "../thread-utils/identity";
@@ -28,7 +30,18 @@ export function upsertThreadView(view: ThreadViewState) {
   const views = useGatewayThreadViewStore();
   const key = threadViewKey(view.hostId, view.threadId);
   const { [key]: _existing, ...remaining } = views.threadViews;
-  views.threadViews = pruneThreadViews({ ...remaining, [key]: view });
+  const retainedHistory = retainThreadHistory(
+    view.history,
+    views.expandedTurnId(view.hostId, view.threadId),
+  );
+  const retainedView =
+    retainedHistory === view.history ? view : { ...view, ...projectionFields(retainedHistory) };
+  // Removing and reinserting the key makes plain object insertion order our LRU order. This keeps
+  // the policy colocated with the only cache write boundary instead of maintaining a second list.
+  views.threadViews = pruneThreadViews({
+    ...remaining,
+    [key]: { ...retainedView, events: retainThreadEvents(retainedView.events) },
+  });
 }
 
 function pruneThreadViews(threadViews: Record<string, ThreadViewState>) {
@@ -49,18 +62,19 @@ function pruneThreadViews(threadViews: Record<string, ThreadViewState>) {
   return Object.fromEntries(entries);
 }
 
-export function patchThreadView(hostId: number, threadId: string, patch: Partial<ThreadViewState>) {
+type ThreadViewPatch = Omit<Partial<ThreadViewState>, "history"> & {
+  history?: ThreadHistoryState | null;
+};
+
+export function patchThreadView(hostId: number, threadId: string, patch: ThreadViewPatch) {
   const navigation = useGatewayNavigationStore();
   const views = useGatewayThreadViewStore();
   const key = threadViewKey(hostId, threadId);
   const existing = views.threadViews[key] ?? emptyThreadView(hostId, threadId);
-  // history and timelineTurns are one cache invariant. Realtime events also update background
-  // threads, so accepting a history-only patch without rebuilding its projection would make the
-  // next route switch restore stale rows. Patches unrelated to history preserve both references.
+  // History is already projected at the reducer boundary. Route switches restore this same object
+  // instead of maintaining a second timeline-turns array that can drift from it.
   const projectedPatch =
-    "history" in patch
-      ? projectionFields(patch.history ?? null)
-      : { history: existing.history, timelineTurns: existing.timelineTurns };
+    "history" in patch ? projectionFields(patch.history ?? null) : { history: existing.history };
   const next = { ...existing, ...patch, ...projectedPatch, hostId, threadId };
   upsertThreadView(next);
   if (navigation.selectedHostId === hostId && navigation.selectedThreadId === threadId) {
@@ -81,15 +95,14 @@ export function activateThreadViewFromCache(hostId: number, threadId: string) {
   // Route changes are selection only: restore the already-projected Pinia references. Do not call
   // setHistory() here, because remounting Agent for Dockview must not rescan a large cached thread.
   navigation.selectedHostId = view.hostId;
-  navigation.selectedProjectId = view.projectId;
+  navigation.selectedCwd = view.currentThread?.cwd ?? view.cwd;
   navigation.selectedThreadId = view.threadId;
   views.currentThread = view.currentThread;
   views.history = view.history;
-  views.timelineTurns = view.timelineTurns;
   views.events = [...view.events];
-  views.olderTurnsCursor = view.olderTurnsCursor;
-  views.newerTurnsCursor = view.newerTurnsCursor;
+  views.oldestTimelineCursor = view.oldestTimelineCursor;
   views.lastEventId = view.lastEventId;
+  views.appliedEventId = view.appliedEventId ?? view.lastEventId;
   views.eventEpoch = view.eventEpoch;
   return true;
 }
@@ -107,15 +120,14 @@ export function saveSelectedThreadView() {
   }
   upsertThreadView({
     hostId: navigation.selectedHostId,
-    projectId: navigation.selectedProjectId,
+    cwd: navigation.selectedCwd,
     threadId: navigation.selectedThreadId,
     currentThread: views.currentThread,
     history: views.history,
-    timelineTurns: views.timelineTurns,
     events: [...views.events],
-    olderTurnsCursor: views.olderTurnsCursor,
-    newerTurnsCursor: views.newerTurnsCursor,
+    oldestTimelineCursor: views.oldestTimelineCursor,
     lastEventId: views.lastEventId,
+    appliedEventId: views.appliedEventId,
     eventEpoch: views.eventEpoch,
     loading: false,
     error: null,
@@ -149,31 +161,46 @@ export function appendEventsToThreadView(events: GatewayEvent[]) {
   const fresh = events.filter((event) => event.id > view.lastEventId);
   if (fresh.length === 0) return;
   patchThreadView(first.hostId, first.threadId, {
-    events: [...view.events, ...fresh].slice(-500),
+    events: retainThreadEvents([...view.events, ...fresh]),
     lastEventId: fresh.at(-1)!.id,
+  });
+}
+
+export function markThreadEventsApplied(events: GatewayEvent[]) {
+  if (events.length === 0) return;
+  const views = useGatewayThreadViewStore();
+  const first = events[0]!;
+  const view = views.threadViews[threadViewKey(first.hostId, first.threadId)];
+  if (view === undefined) return;
+  patchThreadView(first.hostId, first.threadId, {
+    appliedEventId: Math.max(
+      view.appliedEventId ?? view.lastEventId,
+      ...events.map((event) => event.id),
+    ),
   });
 }
 
 function emptyThreadView(hostId: number, threadId: string): ThreadViewState {
   return {
     hostId,
-    projectId: null,
+    cwd: null,
     threadId,
     currentThread: null,
     history: null,
-    timelineTurns: [],
     events: [],
-    olderTurnsCursor: null,
-    newerTurnsCursor: null,
+    oldestTimelineCursor: null,
     lastEventId: 0,
+    appliedEventId: 0,
     eventEpoch: "",
     loading: false,
     error: null,
   };
 }
 
-function projectionFields(history: ThreadHistoryState | null) {
-  if (history === null) return { history: null, timelineTurns: [] };
+function projectionFields(history: ThreadHistoryState | null): {
+  history: ThreadTimelineHistoryState | null;
+} {
+  if (history === null) return { history: null };
   const projected = projectThreadTimelineHistory(history);
-  return { history: projected, timelineTurns: projected.thread.turns };
+  return { history: projected };
 }

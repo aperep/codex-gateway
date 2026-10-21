@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed, ref, toRef, watch } from "vue";
+import { computed, onScopeDispose, ref, toRef, watch } from "vue";
+import { useGatewayThreadViewStore } from "@/stores/gateway-thread-view";
 import type { ThreadRuntimeStatus, ThreadTimelineTurn } from "~~/shared/types";
 import { Button } from "@codex-gateway/ui/button";
 import ThreadTimelineRowView from "@/components/thread/ThreadTimelineRowView.vue";
@@ -15,6 +16,7 @@ import { useIntermediateStepsDisclosure } from "@/components/thread/useIntermedi
 import { provideFilePreviewContext } from "@/composables/files/useFilePreviewContext";
 import { useGatewayComposerStore } from "@/stores/gateway-composer";
 import { useGatewayThreadTurnsStore } from "@/stores/gateway-thread-turns";
+import { useGatewayThreadRuntimeStore } from "@/stores/gateway-thread-runtime";
 import { collaborationModeFromThreadSettings } from "@/utils/thread-collaboration-mode";
 
 const props = defineProps<{
@@ -22,11 +24,10 @@ const props = defineProps<{
   threadStatus: ThreadRuntimeStatus;
   turns: ThreadTimelineTurn[];
   hostId: number | null;
-  projectId?: number | null;
   workspaceRoot?: string | null;
   loading: boolean;
   loadingOlder: boolean;
-  olderTurnsCursor: string | null;
+  oldestTimelineCursor: string | null;
   scrollToLatestToken?: number;
 }>();
 
@@ -37,15 +38,27 @@ const emit = defineEmits<{
 const { t } = useI18n();
 const composer = useGatewayComposerStore();
 const threadTurns = useGatewayThreadTurnsStore();
+const runtime = useGatewayThreadRuntimeStore();
+const views = useGatewayThreadViewStore();
+
+onScopeDispose(() => {
+  if (props.hostId !== null && props.threadId !== null) {
+    views.setExpandedTurn(props.hostId, props.threadId, null);
+  }
+});
 const userDetachedFromLatest = ref(false);
-const projectId = computed(() => props.projectId ?? null);
 const planModeActive = computed(() => selectedThreadMode() === "plan");
 const threadIsRunning = computed(() => props.threadStatus === "running");
+const activeTurnId = computed(() =>
+  props.hostId === null || props.threadId === null
+    ? null
+    : runtime.threadRuntimeProjection(props.hostId, props.threadId).activeTurnId,
+);
 const autoCollapseIntermediate = computed(() => !userDetachedFromLatest.value);
 
 provideFilePreviewContext({
   hostId: toRef(props, "hostId"),
-  projectId,
+  cwd: computed(() => props.workspaceRoot ?? null),
   threadId: toRef(props, "threadId"),
   workspaceRoot: computed(() => props.workspaceRoot ?? null),
 });
@@ -57,16 +70,14 @@ const turnStates = computed(() =>
   })),
 );
 const disclosureTurns = computed(() =>
-  turnStates.value.map(({ turn, sections }) => ({
+  turnStates.value.map(({ turn }) => ({
     id: turn.id,
-    status: turn.status,
-    items: sections.items,
-    turnIsActive: sections.turnIsActive,
   })),
 );
 const { isIntermediateOpen, setIntermediateOpen } = useIntermediateStepsDisclosure({
   turns: disclosureTurns,
   threadIsRunning,
+  activeTurnId,
   autoCollapseIntermediate,
 });
 function isTurnItemsLoading(turnId: string) {
@@ -106,8 +117,19 @@ function selectedThreadMode() {
   );
 }
 
+watch(
+  () => props.turns.find((turn) => isIntermediateOpen(turn.id))?.id ?? null,
+  (turnId) => {
+    if (props.hostId === null || props.threadId === null) return;
+    // Reuse the accordion's one selection. Protect it before a requested page commits; a second
+    // visibility tracker would add state even though collapsed rows already leave the virtual list.
+    views.setExpandedTurn(props.hostId, props.threadId, turnId);
+  },
+  { flush: "sync", immediate: true },
+);
+
 function handleReachStart() {
-  if (props.olderTurnsCursor && !props.loadingOlder) emit("loadOlder");
+  if (props.oldestTimelineCursor && !props.loadingOlder) emit("loadOlder");
 }
 
 function handleUserDetachedChange(detached: boolean) {
@@ -120,8 +142,13 @@ async function handleIntermediateToggle(turnId: string, open: boolean) {
     return;
   }
   const turn = props.turns.find((candidate) => candidate.id === turnId);
-  if (turn?.itemsView !== "full" && !(await threadTurns.loadTurnItems(turnId))) return;
   setIntermediateOpen(turnId, true);
+  if (
+    turn?.itemsView !== "full" &&
+    turn?.olderItemsCursor === undefined &&
+    !(await threadTurns.loadTurnItems(turnId))
+  )
+    return;
 }
 
 function estimateRowSize(row: unknown) {
@@ -158,7 +185,10 @@ watch(
     @user-detached-change="handleUserDetachedChange"
   >
     <template #overlay="{ visible }">
-      <div v-if="olderTurnsCursor && visible" class="pointer-events-auto flex justify-center pt-2">
+      <div
+        v-if="oldestTimelineCursor && visible"
+        class="pointer-events-auto flex justify-center pt-2"
+      >
         <Button
           data-testid="load-older-turns-button"
           variant="outline"
@@ -177,6 +207,7 @@ watch(
         :host-id="hostId"
         :thread-id="threadId"
         @intermediate-toggle="handleIntermediateToggle"
+        @load-more="threadTurns.loadTurnItems($event)"
       />
     </template>
   </VirtualTimelineViewport>

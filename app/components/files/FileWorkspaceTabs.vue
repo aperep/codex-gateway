@@ -8,13 +8,11 @@ const props = defineProps<{
   documents: FilePreviewDocument[];
   activePath: string | null;
   hostId: number;
-  projectId: number | null;
   rootPath: string;
 }>();
 
 const gitWorkspace = useFileGitWorkspace({
   hostId: () => props.hostId,
-  projectId: () => props.projectId,
   rootPath: () => props.rootPath,
 });
 

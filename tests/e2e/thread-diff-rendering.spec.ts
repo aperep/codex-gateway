@@ -3,8 +3,8 @@ import { openApp } from "./helpers/app";
 import { appendFileDiffLines, seedGatewayThread } from "./helpers/gateway-store";
 import { diffScrollLeft, setDiffScrollLeft } from "./helpers/scroll";
 import type { ThreadHistoryState } from "../../shared/types";
-import type { ThreadViewState } from "../../app/stores/gateway/types";
 import { projectThreadTimelineHistory } from "../../shared/thread-history/timeline";
+import type { ThreadViewState } from "../../app/stores/gateway/types";
 import { gatewayThreadFixture } from "./fixtures/gateway-thread";
 
 test("file diff blocks can collapse and expand after virtual timeline measurement", async ({
@@ -28,7 +28,7 @@ test("file diff blocks can collapse and expand after virtual timeline measuremen
 
   await seedGatewayThread(page, {
     threadId,
-    projectId: 1,
+    cwd: "/tmp/e2e",
     currentThread: { id: threadId, name: "Diff UI", cwd: workspaceRoot },
     history: {
       thread: {
@@ -57,9 +57,12 @@ test("file diff blocks can collapse and expand after virtual timeline measuremen
   });
 
   await openIntermediateSteps(page);
-  const toggle = page.getByRole("button", { name: /src\/example\.py/ });
+  const fileName = page.getByRole("button", { name: `打开文件：${changedFilePath}` });
+  const toggle = page
+    .getByRole("button", { name: /(?:展开|收起)差异：.*src\/example\.py/ })
+    .first();
   const diffText = page.getByText("new_value =");
-  await expect(toggle.locator("span[title]")).toHaveAttribute("title", changedFilePath);
+  await expect(fileName).toHaveAttribute("title", changedFilePath);
   await expect(toggle).toHaveAttribute("data-state", "open");
   await expect(diffText).toBeVisible();
   await expect
@@ -174,7 +177,7 @@ test("streaming diff keeps user-selected horizontal scroll position", async ({ p
 
   await seedGatewayThread(page, {
     threadId,
-    projectId: 1,
+    cwd: "/tmp/e2e",
     currentThread: { id: threadId, name: "Diff Horizontal Scroll" },
     history: {
       thread: {
@@ -198,10 +201,9 @@ test("streaming diff keeps user-selected horizontal scroll position", async ({ p
   });
 
   await openIntermediateSteps(page);
-  await expect(page.getByRole("button", { name: /src\/wide\.py/ })).toHaveAttribute(
-    "data-state",
-    "open",
-  );
+  await expect(
+    page.getByRole("button", { name: /收起差异：src\/wide\.py/ }).first(),
+  ).toHaveAttribute("data-state", "open");
   await expect(page.getByText("wide_line_001")).toBeVisible();
   const chosenScrollLeft = await setDiffScrollLeft(page, "src/wide.py", 96);
   expect(chosenScrollLeft).toBeGreaterThan(0);
@@ -235,7 +237,7 @@ test("switching threads keeps asynchronously rendered diff content in normal flo
       (_, index) => `+async_diff_line_${String(index + 1).padStart(3, "0")} = ${index + 1}`,
     ),
   ].join("\n");
-  const diffHistory = {
+  const diffHistory: ThreadHistoryState = {
     thread: {
       id: diffThreadId,
       turns: [
@@ -260,7 +262,7 @@ test("switching threads keeps asynchronously rendered diff content in normal flo
       ],
     },
   };
-  const shortHistory = {
+  const shortHistory: ThreadHistoryState = {
     thread: {
       id: shortThreadId,
       turns: [
@@ -282,7 +284,7 @@ test("switching threads keeps asynchronously rendered diff content in normal flo
 
   await seedGatewayThread(page, {
     threadId: diffThreadId,
-    projectId: 1,
+    cwd: "/tmp/e2e",
     status: "running",
     currentThread: { id: diffThreadId, name: "Async Diff" },
     history: diffHistory,
@@ -299,27 +301,23 @@ test("switching threads keeps asynchronously rendered diff content in normal flo
   await page.getByTestId(`thread-button-${shortThreadId}`).click();
   await expect(page.getByText("short thread content")).toBeVisible();
   await page.getByTestId(`thread-button-${diffThreadId}`).click();
-  await expect(page.getByRole("button", { name: /src\/async\.py/ })).toHaveAttribute(
-    "data-state",
-    "open",
-  );
+  await expect(
+    page.getByRole("button", { name: /收起差异：src\/async\.py/ }).first(),
+  ).toHaveAttribute("data-state", "open");
   await expect(page.getByText("async_diff_line_120")).toBeVisible();
   await expect(page.getByText(finalMarker)).toBeVisible();
   await expect.poll(() => diffEndsBeforeText(page, finalMarker)).toBe(true);
 });
 
 function cachedThreadView(threadId: string, history: ThreadHistoryState): ThreadViewState {
-  const timelineTurns = projectThreadTimelineHistory(history).thread.turns;
   return {
     hostId: 1,
-    projectId: 1,
+    cwd: "/tmp/e2e",
     threadId,
-    currentThread: gatewayThreadFixture({ id: threadId }, { projectId: 1 }),
-    history,
-    timelineTurns,
+    currentThread: gatewayThreadFixture({ id: threadId }),
+    history: projectThreadTimelineHistory(history),
     events: [],
-    olderTurnsCursor: null,
-    newerTurnsCursor: null,
+    oldestTimelineCursor: null,
     lastEventId: 0,
     eventEpoch: "e2e-event-epoch",
     loading: false,

@@ -2,7 +2,6 @@ export type TerminalScope = "host" | "project" | "thread";
 
 export interface TerminalOpenTarget {
   hostId: number;
-  projectId?: number | null;
   threadId?: string | null;
   cwd?: string | null;
   title?: string | null;
@@ -14,7 +13,6 @@ export interface TerminalOpenTarget {
 export interface TerminalSessionSnapshot {
   sessionId: string;
   hostId: number;
-  projectId: number | null;
   threadId: string | null;
   cwd: string | null;
   title: string;

@@ -2,6 +2,7 @@ import { match } from "ts-pattern";
 import type { GatewayEvent } from "~~/shared/types";
 import { notificationCenter } from "./notification-center";
 import {
+  threadAsyncUserQuestionNotification,
   threadGoalCompletedNotification,
   threadTurnCompletedNotification,
   threadUserInputRequestedNotification,
@@ -10,21 +11,30 @@ import { shouldNotifyMainThread } from "./thread-notification-scope";
 import type { ServerNotification } from "~~/shared/types";
 import type { ThreadGoalResolver, ThreadMetadataResolver } from "../runtime/thread-runtime-events";
 import { recordFromUnknown } from "~~/shared/utils/records";
+import { gatewayLog } from "../logging";
 import { pendingServerRequests } from "../runtime/pending-server-requests";
 
 export function dispatchThreadRuntimeNotification(
   event: GatewayEvent,
   options: { resolveGoal?: ThreadGoalResolver; resolveThread?: ThreadMetadataResolver } = {},
 ) {
-  match(event.method)
-    .with("thread/goal/updated", () => {
+  match(event.event.type)
+    .with("timeline.item.upsert", () => {
+      void dispatchAsyncUserQuestion(event, options.resolveThread);
+    })
+    .with("thread.goal.updated", () => {
       void dispatchGoalUpdated(event, options.resolveThread);
     })
-    .with("turn/completed", () => {
+    .with("turn.completed", () => {
       void dispatchTurnCompleted(event, options.resolveGoal, options.resolveThread);
     })
-    .with("item/tool/requestUserInput", () => {
-      void dispatchUserInputRequested(event, options.resolveThread);
+    .with("serverRequest.requested", () => {
+      if (
+        event.event.type === "serverRequest.requested" &&
+        event.event.requestKind === "userInput"
+      ) {
+        void dispatchUserInputRequested(event, options.resolveThread);
+      }
     })
     .otherwise(() => undefined);
 }
@@ -36,8 +46,18 @@ async function dispatchUserInputRequested(
   if (!(await shouldNotifyMainThread(event, resolveThread))) {
     return;
   }
-  if (!pendingServerRequests.isPending(event)) return;
-  dispatchIfPresent(threadUserInputRequestedNotification(event));
+  if (pendingServerRequests.isPending(event)) {
+    dispatchIfPresent(threadUserInputRequestedNotification(event));
+  }
+}
+
+async function dispatchAsyncUserQuestion(
+  event: GatewayEvent,
+  resolveThread: ThreadMetadataResolver | undefined,
+) {
+  const notification = threadAsyncUserQuestionNotification(event);
+  if (notification === null || !(await shouldNotifyMainThread(event, resolveThread))) return;
+  dispatchIfPresent(notification);
 }
 
 async function dispatchGoalUpdated(
@@ -69,7 +89,7 @@ async function threadHasGoal(resolveGoal: ThreadGoalResolver) {
     const goal = recordFromUnknown(await resolveGoal())?.goal;
     return goal !== null && goal !== undefined;
   } catch (error) {
-    console.error("[gateway] failed to inspect thread goal before notification", {
+    gatewayLog("error", "gateway", "failed to inspect thread goal before notification", {
       error: error instanceof Error ? error.message : String(error),
     });
     return true;
@@ -79,7 +99,7 @@ async function threadHasGoal(resolveGoal: ThreadGoalResolver) {
 function dispatchIfPresent(notification: ServerNotification | null) {
   if (notification !== null) {
     void notificationCenter.publish(notification).catch((error: unknown) => {
-      console.error("[gateway] thread notification delivery failed", {
+      gatewayLog("error", "gateway", "thread notification delivery failed", {
         key: notification.key,
         message: error instanceof Error ? error.message : String(error),
       });

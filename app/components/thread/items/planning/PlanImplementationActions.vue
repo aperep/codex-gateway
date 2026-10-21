@@ -65,7 +65,7 @@ async function implementPlan() {
     const updated = await composer.saveThreadSettings(
       props.hostId,
       props.threadId,
-      navigation.selectedProjectId,
+      navigation.selectedCwd,
       { collaborationMode },
     );
     if (!updated) return;

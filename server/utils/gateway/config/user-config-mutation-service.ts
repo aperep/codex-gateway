@@ -11,6 +11,7 @@ import {
 } from "../state/memory";
 import { runtimeConfigFromMemory } from "../http/errors";
 import { pinnedThreadEvents } from "./pinned-thread-events";
+import { gatewayLog } from "../logging";
 
 export class UserConfigMutationService {
   commit<T>(userId: number, mutateDraft: () => T): T {
@@ -91,7 +92,7 @@ function attemptRuntimeReconciliation(userId: number, resource: string, reconcil
   } catch (error) {
     // Runtime resources are not transactional. Continue converging independent resources after a
     // failure instead of skipping SSH sync, supervision, or browser invalidation behind it.
-    console.error("[gateway] committed config runtime reconciliation failed", {
+    gatewayLog("error", "gateway", "committed config runtime reconciliation failed", {
       userId,
       resource,
       message: error instanceof Error ? error.message : String(error),
@@ -106,10 +107,5 @@ function pruneDanglingHostRelations(state: ReturnType<typeof currentGatewayMemor
   // lifecycle callbacks run after commit and must never mutate durable configuration: doing so
   // would make memory look correct until the next restart restores orphaned rows from SQLite.
   state.projects = state.projects.filter((project) => hostIds.has(project.hostId));
-  state.configuredProjectIds = new Set(
-    [...state.configuredProjectIds].filter((projectId) =>
-      state.projects.some((project) => project.id === projectId),
-    ),
-  );
   state.pinnedThreads = state.pinnedThreads.filter((thread) => hostIds.has(thread.hostId));
 }

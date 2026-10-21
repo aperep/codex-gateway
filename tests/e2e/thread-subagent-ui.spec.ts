@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { openApp } from "./helpers/app";
+import { gatewayEventFromNotification } from "./helpers/canonical-event";
 import {
   capturedRealtimeInterrupt,
   installRealtimeInterruptMock,
@@ -99,7 +100,7 @@ test("sub-agent activity opens workspace tabs with sub-agent timelines", async (
                             {
                               id: "sub-agent-2",
                               type: "agentMessage",
-                              phase: "final_answer",
+                              phase: "final_answer" as const,
                               text: "Second untimestamped finding from Nova.",
                             },
                           ],
@@ -111,27 +112,22 @@ test("sub-agent activity opens workspace tabs with sub-agent timelines", async (
             },
             lastEventId: 12,
             recentEvents: [
-              {
+              gatewayEventFromNotification({
                 id: 12,
-                hostId: 1,
                 threadId: openedThreadId,
                 method: "item/started",
-                payload: {
-                  method: "item/started",
-                  params: {
-                    threadId: openedThreadId,
-                    turnId: "sub-turn",
-                    startedAtMs: Date.now(),
-                    item: {
-                      id: "sub-agent",
-                      type: "agentMessage",
-                      phase: "final_answer",
-                      text: `Sub-agent finding from ${threadName}.`,
-                    },
+                params: {
+                  threadId: openedThreadId,
+                  turnId: "sub-turn",
+                  startedAtMs: Date.now(),
+                  item: {
+                    id: "sub-agent",
+                    type: "agentMessage",
+                    phase: "final_answer",
+                    text: `Sub-agent finding from ${threadName}.`,
                   },
                 },
-                createdAt: new Date().toISOString(),
-              },
+              }),
             ],
           },
         ];

@@ -1,10 +1,11 @@
 import { z } from "zod";
-import { INITIAL_TURN_PAGE_LIMIT, OLDER_TURN_PAGE_LIMIT } from "~~/shared/config";
-import { optionalPositiveInt } from "./common";
+import { INITIAL_TIMELINE_PAGE_LIMIT } from "~~/shared/config";
+import { agentProviderIdSchema } from "~~/shared/agent/providers";
+import { reasoningSummarySchema } from "~~/shared/reasoning-summary";
+import { uploadedFileSchema } from "~~/shared/runtime/uploaded-file";
 
 export const threadListSchema = z.object({
   hostId: z.coerce.number().int().positive(),
-  projectId: optionalPositiveInt,
   cwd: z.string().trim().nullable().optional(),
   searchTerm: z.string().trim().nullable().optional(),
   limit: z.coerce.number().int().min(1).max(100).default(30),
@@ -14,9 +15,8 @@ export const threadListSchema = z.object({
 
 export const threadOpenSchema = z.object({
   hostId: z.coerce.number().int().positive(),
-  projectId: optionalPositiveInt,
   threadId: z.string().trim().min(1),
-  limit: z.coerce.number().int().min(1).max(100).default(INITIAL_TURN_PAGE_LIMIT),
+  limit: z.coerce.number().int().min(1).max(100).default(INITIAL_TIMELINE_PAGE_LIMIT),
 });
 
 export const threadMetadataListSchema = z.object({
@@ -25,23 +25,6 @@ export const threadMetadataListSchema = z.object({
     .string()
     .transform((value) => [...new Set(value.split(",").map((item) => item.trim()))])
     .pipe(z.array(z.string().min(1)).min(1).max(20)),
-});
-
-export const threadTurnsListSchema = z.object({
-  hostId: z.coerce.number().int().positive(),
-  threadId: z.string().trim().min(1),
-  cursor: z.string().trim().nullable().optional(),
-  limit: z.coerce.number().int().min(1).max(100).default(OLDER_TURN_PAGE_LIMIT),
-  sortDirection: z.enum(["asc", "desc"]).default("desc"),
-});
-
-export const threadItemsListSchema = z.object({
-  hostId: z.coerce.number().int().positive(),
-  threadId: z.string().trim().min(1),
-  turnId: z.string().trim().min(1),
-  cursor: z.string().trim().nullable().optional(),
-  limit: z.coerce.number().int().min(1).max(200).default(100),
-  sortDirection: z.enum(["asc", "desc"]).default("asc"),
 });
 
 export const threadRenameSchema = z.object({
@@ -53,6 +36,7 @@ export const threadRenameSchema = z.object({
 export const threadSettingFields = {
   model: z.string().trim().nullable().optional(),
   effort: z.string().trim().min(1).nullable().optional(),
+  summary: reasoningSummarySchema.nullable().optional(),
   approvalPolicy: z.enum(["untrusted", "on-request", "never"]).nullable().optional(),
 };
 
@@ -88,8 +72,8 @@ const fileReferenceSchema = z
 
 export const threadStartSchema = z.object({
   hostId: z.coerce.number().int().positive(),
-  projectId: optionalPositiveInt,
   cwd: z.string().trim().nullable().optional(),
+  provider: agentProviderIdSchema.optional(),
   ...threadSettingFields,
 });
 
@@ -102,7 +86,6 @@ export const threadSettingsUpdateSchema = z.object({
 
 export const turnStartSchema = z.object({
   hostId: z.coerce.number().int().positive(),
-  projectId: z.coerce.number().int().positive(),
   threadId: z.string().trim().min(1),
   text: z.string().trim().default(""),
   clientUserMessageId: z.string().trim().nullable().optional(),
@@ -110,28 +93,18 @@ export const turnStartSchema = z.object({
   ...threadSettingFields,
   collaborationMode: collaborationModeSchema,
   images: z.array(imageInputSchema).default([]),
-  files: z
-    .array(
-      z.object({
-        path: z.string().trim().min(1),
-        name: z.string().trim().min(1),
-        mimeType: z.string().trim().nullable().optional(),
-        size: z.coerce.number().int().min(0),
-        isImage: z.boolean(),
-      }),
-    )
-    .default([]),
+  files: z.array(uploadedFileSchema).default([]),
   references: z.array(fileReferenceSchema).max(10).default([]),
 });
 
 export const turnSteerSchema = z.object({
   hostId: z.coerce.number().int().positive(),
-  projectId: z.coerce.number().int().positive(),
   threadId: z.string().trim().min(1),
   expectedTurnId: z.string().trim().min(1),
   text: z.string().trim().default(""),
   clientUserMessageId: z.string().trim().nullable().optional(),
   images: z.array(imageInputSchema).default([]),
+  files: z.array(uploadedFileSchema).default([]),
   references: z.array(fileReferenceSchema).max(10).default([]),
 });
 

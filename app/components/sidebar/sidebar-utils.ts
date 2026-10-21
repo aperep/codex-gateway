@@ -21,6 +21,7 @@ const busyHostConnectionStatuses = new Set([
   "upgrading",
   "restarting",
   "connecting",
+  "mfaConnecting",
 ]);
 
 const hostConnectionClassByStatus: Record<string, string> = {
@@ -28,6 +29,8 @@ const hostConnectionClassByStatus: Record<string, string> = {
   upgrading: "text-primary",
   restarting: "text-primary",
   connecting: "text-primary",
+  mfaConnecting: "text-accent-orange",
+  mfaRequired: "text-accent-orange",
   connected: "text-accent-green",
   failed: "text-destructive",
 };
@@ -37,6 +40,8 @@ const hostConnectionLabelKeyByStatus: Record<string, string> = {
   upgrading: "app.hostUpgrading",
   restarting: "app.hostRestarting",
   connecting: "app.hostConnecting",
+  mfaConnecting: "app.hostMfaConnecting",
+  mfaRequired: "app.hostMfaRequired",
   connected: "app.connected",
   failed: "app.hostConnectionFailed",
   idle: "app.hostDisconnected",

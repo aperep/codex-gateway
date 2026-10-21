@@ -46,7 +46,7 @@ export function useFileGitComparison(document: Ref<FilePreviewDocument>) {
     () =>
       [
         document.value.key,
-        document.value.projectId,
+        document.value.cwd,
         document.value.previewKind,
         document.value.objectUrl,
         document.value.size,

@@ -13,7 +13,7 @@ const reviews = useFileGitReviewPanelStore();
 const scopeKey = computed(() =>
   workspaceLayoutScopeKey(
     context.selectedHostId.value,
-    context.selectedProjectId.value,
+    context.selectedCwd.value,
     context.selectedThreadId.value,
   ),
 );
@@ -23,10 +23,9 @@ const selectedPath = computed(() => reviews.selectedPathFor(scopeKey.value));
 <template>
   <div data-testid="git-review-panel" class="flex h-full min-h-0 flex-col overflow-hidden">
     <GitChangesView
-      v-if="context.selectedHostId.value && context.selectedProjectId.value"
+      v-if="context.selectedHostId.value && context.rootPath.value"
       presentation="review"
       :host-id="context.selectedHostId.value"
-      :project-id="context.selectedProjectId.value"
       :root-path="context.rootPath.value"
       :selected-path="selectedPath"
       @select="reviews.select(scopeKey, $event)"

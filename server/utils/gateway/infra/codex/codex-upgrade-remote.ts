@@ -14,29 +14,17 @@ printf '%s %s\n' "$platform" "$arch"
   );
 }
 
-export function codexRemoteNodeRuntimeProbePayload() {
-  return codexRemoteBootstrapPayload(
-    `
-set -eu
-node_major="$(node -p 'Number(process.versions.node.split(".")[0])' 2>/dev/null || true)"
-case "$node_major" in ""|*[!0-9]*) exit 1 ;; esac
-[ "$node_major" -ge 16 ]
-command -v npm >/dev/null 2>&1
-printf '%s %s\n' "$(node --version)" "$(command -v node)"
-`,
-    { requireCodex: false },
-  );
-}
-
-export function codexRemoteCreateUpgradeStagePayload() {
+export function codexRemoteCreateUpgradeStagePayload(sha256: string) {
   return codexRemoteBootstrapPayload(
     `
 set -eu
 stage_root="$HOME/.cache/codex-gateway/upgrades"
-mkdir -p "$stage_root"
-# A slow upload or queued retry may legitimately own a directory older than an hour.
-# The owning Gateway workflow cleans its staging directory when all attempts finish.
-mktemp -d "$stage_root/upgrade.XXXXXX"
+# Content-addressed staging survives a failed workflow and Gateway restarts. The existing
+# physical-target lock serializes aliases; a new archive digest never reuses unrelated bytes.
+stage="$stage_root/upgrade.${sha256}"
+mkdir -p "$stage"
+chmod 0700 "$stage_root" "$stage"
+printf '%s\\n' "$stage"
 `,
     { requireCodex: false },
   );
@@ -48,23 +36,61 @@ export function codexRemoteCleanupUpgradeStagePayload(stagePath: string) {
   });
 }
 
-export function codexRemoteOfflineInstallPayload(input: {
+export function codexRemoteStandaloneInstallPayload(input: {
   version: string;
+  releaseTarget: string;
   stagePath: string;
   artifacts: CodexArtifactBundle;
 }) {
-  const archiveFile = `${input.stagePath}/${input.artifacts.cacheArchive.fileName}`;
-  const nodeArchive = input.artifacts.nodeArchive;
+  const archive = input.artifacts.standaloneArchive;
+  const archiveFile = `${input.stagePath}/${archive.fileName}`;
   return codexRemoteBootstrapPayload(
     `
 set -eu
 stage=${shellQuote(input.stagePath)}
-verify_prefix="$stage/verify-prefix"
-# Keep verified archives for a queued retry. Gateway owns final cleanup, including failed installs.
-
 archive_file=${shellQuote(archiveFile)}
-expected_archive_sha=${shellQuote(input.artifacts.cacheArchive.sha512)}
-npm_cache="$stage/npm-cache"
+expected_archive_sha=${shellQuote(archive.sha256)}
+version=${shellQuote(input.version)}
+release_target=${shellQuote(input.releaseTarget)}
+codex_home="\${CODEX_HOME:-$HOME/.codex}"
+install_root="$codex_home/packages/standalone"
+releases_dir="$install_root/releases"
+release_dir="$releases_dir/$version-$release_target"
+current_link="$install_root/current"
+bin_dir="\${CODEX_INSTALL_DIR:-$HOME/.local/bin}"
+bin_path="$bin_dir/codex"
+code_mode_host_bin_path="$bin_dir/codex-code-mode-host"
+stage_release="$releases_dir/.staging.$version-$release_target.$$"
+
+replace_path_with_symlink() {
+  link_path="$1"
+  link_target="$2"
+  tmp_link="$3"
+  rm -f "$tmp_link"
+  ln -s "$link_target" "$tmp_link"
+  if mv -Tf "$tmp_link" "$link_path" 2>/dev/null; then
+    return
+  fi
+  if mv -hf "$tmp_link" "$link_path" 2>/dev/null; then
+    return
+  fi
+  # Older standalone attempts could leave current as a real directory. rm -f cannot remove
+  # that path, and replacing it in place would make every later upload fail after transfer. Move
+  # the stale directory aside before installing the new symlink, then remove only that old tree.
+  if [ -d "$link_path" ] && [ ! -L "$link_path" ]; then
+    stale_path="$link_path.stale.$$"
+    rm -rf "$stale_path"
+    mv "$link_path" "$stale_path"
+    if mv "$tmp_link" "$link_path"; then
+      rm -rf "$stale_path"
+      return
+    fi
+    mv "$stale_path" "$link_path"
+    return 1
+  fi
+  rm -f "$link_path"
+  mv -f "$tmp_link" "$link_path"
+}
 
 verify_sha256() {
   if command -v sha256sum >/dev/null 2>&1; then
@@ -76,109 +102,58 @@ verify_sha256() {
     [ "$actual" = "$2" ]
     return
   fi
-  echo "sha256sum or shasum is required to verify the official Node.js archive" >&2
+  echo "sha256sum or shasum is required to verify the official Codex archive" >&2
   return 1
 }
 
-${
-  nodeArchive
-    ? `
-node_archive=${shellQuote(`${input.stagePath}/${nodeArchive.fileName}`)}
-verify_sha256 "$node_archive" ${shellQuote(nodeArchive.sha256)}
-managed_node_dir="$HOME/.nvm/versions/node/v${nodeArchive.version}"
-managed_node_tmp="$managed_node_dir.codex-gateway.$$"
-rm -rf "$managed_node_tmp"
-mkdir -p "$(dirname "$managed_node_dir")" "$stage/node-extract"
-tar -xzf "$node_archive" -C "$stage/node-extract"
-mv "$stage/node-extract/${nodeArchive.directoryName}" "$managed_node_tmp"
-rm -rf "$managed_node_dir"
-mv "$managed_node_tmp" "$managed_node_dir"
-PATH="$managed_node_dir/bin:$PATH"
-export PATH
-hash -r
-`
-    : ""
-}
-
-node_major="$(node -p 'Number(process.versions.node.split(".")[0])' 2>/dev/null || true)"
-case "$node_major" in ""|*[!0-9]*|0|1|2|3|4|5|6|7|8|9|10|11|12|13|14|15)
-  echo "Node.js >=16 with npm is required after bootstrap; selected $(node --version 2>/dev/null || echo missing)" >&2
-  exit 127
-  ;;
-esac
-command -v npm >/dev/null 2>&1 || { echo "npm is required after Node.js bootstrap" >&2; exit 127; }
-
-verify_sha512() {
-  node -e '
-    const { createReadStream } = require("node:fs");
-    const { createHash } = require("node:crypto");
-    const [path, expected] = process.argv.slice(1);
-    const hash = createHash("sha512");
-    const stream = createReadStream(path);
-    stream.on("data", (chunk) => hash.update(chunk));
-    stream.on("error", (error) => { console.error(error.message); process.exit(1); });
-    stream.on("end", () => process.exit(hash.digest("hex") === expected ? 0 : 1));
-  ' "$1" "$2"
-}
-
-verify_sha512 "$archive_file" "$expected_archive_sha"
-mkdir -p "$npm_cache"
-tar -xzf "$archive_file" -C "$npm_cache"
-
-run_npm_install() {
-  label="$1"
-  shift
-  echo "codex_gateway_upgrade_progress $label started $(date -u +%FT%TZ 2>/dev/null || true)" >&2
-  "$@" &
-  npm_pid="$!"
-  while kill -0 "$npm_pid" 2>/dev/null; do
-    sleep 10
-    if kill -0 "$npm_pid" 2>/dev/null; then
-      echo "codex_gateway_upgrade_progress $label still_running $(date -u +%FT%TZ 2>/dev/null || true)" >&2
-    fi
-  done
-  set +e
-  wait "$npm_pid"
-  npm_status="$?"
-  set -e
-  echo "codex_gateway_upgrade_progress $label exited status=$npm_status $(date -u +%FT%TZ 2>/dev/null || true)" >&2
-  return "$npm_status"
-}
-
-rm -rf "$verify_prefix"
-# npm performs both installs from its official cache so package aliases, links, and global
-# node_modules placement match a normal online npm install.
-run_npm_install verify_install npm install -g --offline --force --ignore-scripts \
-  --cache "$npm_cache" --prefix "$verify_prefix" @openai/codex@${input.version}
-verify_version="$("$verify_prefix/bin/codex" --version)"
-case "$verify_version" in
-  *${input.version}*) ;;
-  *) echo "Offline Codex verification installed unexpected version: $verify_version" >&2; exit 1 ;;
-esac
-
-codex_gateway_npm_prefix_writable() {
-  prefix="$1"
-  root="$2"
-  [ -n "$prefix" ] && [ -n "$root" ] || return 1
-  mkdir -p "$prefix/bin" "$root" 2>/dev/null || return 1
-  [ -w "$prefix/bin" ] && [ -w "$root" ]
-}
-
-npm_global_prefix="$(npm prefix -g 2>/dev/null || true)"
-npm_global_root="$(npm root -g 2>/dev/null || true)"
-if ! codex_gateway_npm_prefix_writable "$npm_global_prefix" "$npm_global_root"; then
-  npm_global_prefix="$HOME/.npm-global"
-  mkdir -p "$npm_global_prefix"
+if ! verify_sha256 "$archive_file" "$expected_archive_sha"; then
+  # Interrupted SFTP writes can leave holes even when stat reports the full size. Discard a
+  # corrupt archive so the next retry can repair it instead of repeatedly skipping the upload.
+  rm -f "$archive_file"
+  echo "Codex archive checksum verification failed; discarded for retry" >&2
+  exit 1
+fi
+mkdir -p "$releases_dir" "$bin_dir"
+rm -rf "$stage_release"
+mkdir -p "$stage_release"
+tar -xzf "$archive_file" -C "$stage_release"
+test -f "$stage_release/codex-package.json" || { echo "Codex standalone archive is missing codex-package.json" >&2; exit 1; }
+test -x "$stage_release/bin/codex" || { echo "Codex standalone archive is missing bin/codex" >&2; exit 1; }
+test -x "$stage_release/bin/codex-code-mode-host" || { echo "Codex standalone archive is missing bin/codex-code-mode-host" >&2; exit 1; }
+test -x "$stage_release/codex-path/rg" || { echo "Codex standalone archive is missing codex-path/rg" >&2; exit 1; }
+chmod 0755 "$stage_release/bin/codex" "$stage_release/bin/codex-code-mode-host" "$stage_release/codex-path/rg"
+if [ -f "$stage_release/codex-resources/bwrap" ]; then
+  chmod 0755 "$stage_release/codex-resources/bwrap"
 fi
 
-run_npm_install final_install npm install -g --offline --force --ignore-scripts \
-  --cache "$npm_cache" --prefix "$npm_global_prefix" @openai/codex@${input.version}
-final_version="$("$npm_global_prefix/bin/codex" --version)"
-case "$final_version" in
-  *${input.version}*) ;;
-  *) echo "Offline Codex installation produced unexpected version: $final_version" >&2; exit 1 ;;
+# This mirrors the official standalone release layout. The visible entrypoint always points
+# through current, so future releases can switch versions without touching shell profiles.
+ln -sf bin/codex "$stage_release/codex"
+rm -rf "$release_dir"
+mv "$stage_release" "$release_dir"
+tmp_current="$install_root/.current.$$"
+replace_path_with_symlink "$current_link" "$release_dir" "$tmp_current"
+tmp_bin="$bin_dir/.codex.$$"
+replace_path_with_symlink "$bin_path" "$current_link/bin/codex" "$tmp_bin"
+case "$release_target" in
+  *-apple-darwin)
+    tmp_code_mode_host="$bin_dir/.codex-code-mode-host.$$"
+    replace_path_with_symlink \
+      "$code_mode_host_bin_path" \
+      "$current_link/bin/codex-code-mode-host" \
+      "$tmp_code_mode_host"
+    ;;
+  *)
+    rm -f "$code_mode_host_bin_path"
+    ;;
 esac
-printf '%s\\n' "$final_version"
+
+installed_version="$("$bin_path" --version)"
+case "$installed_version" in
+  *"$version"*) ;;
+  *) echo "Standalone Codex installation produced unexpected version: $installed_version" >&2; exit 1 ;;
+esac
+printf '%s\\n' "$installed_version"
 `,
     { requireCodex: false },
   );

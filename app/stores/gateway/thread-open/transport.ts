@@ -1,7 +1,5 @@
 import type { ComposerTurnOptions } from "~~/shared/types";
-import { INITIAL_TURN_PAGE_LIMIT } from "~~/shared/config";
-import { useGatewayCatalogStore } from "@/stores/gateway-catalog";
-import { projectById } from "@/stores/gateway-catalog/selectors";
+import { INITIAL_TIMELINE_PAGE_LIMIT } from "~~/shared/config";
 import { useGatewayNavigationStore } from "@/stores/gateway-navigation";
 import { useGatewayRealtimeStore } from "@/stores/gateway-realtime";
 import {
@@ -19,32 +17,29 @@ export type ThreadStartedMessage = Extract<
   { type: "thread.started" }
 >;
 
-export function requestActivateThreadSnapshot(input: {
+export interface ThreadSnapshotActivationInput {
   hostId: number;
-  projectId: number | null;
   threadId: string;
   limit?: number;
-}) {
+}
+
+export function requestActivateThreadSnapshot(input: ThreadSnapshotActivationInput) {
   return useGatewayRealtimeStore().request(
     (requestId) => ({
       type: "thread.activate",
       requestId,
       hostId: input.hostId,
-      projectId: input.projectId,
       threadId: input.threadId,
-      limit: input.limit ?? INITIAL_TURN_PAGE_LIMIT,
+      limit: input.limit ?? INITIAL_TIMELINE_PAGE_LIMIT,
     }),
     expectThreadSnapshot,
-    // Legacy app-server rollouts can take longer than 30 seconds to replay even when the first
-    // page contains only two Turns. Use the realtime broker's shared long-operation deadline,
-    // which intentionally exceeds the backend RPC timeout. A shorter transport-specific timer
-    // abandons the browser request while the server keeps loading and later attaches an orphaned
-    // subscription, causing repeated opens to amplify the original slowdown.
+    // History activation can replay a large official timeline page over SSH. The realtime store
+    // owns the shared long-operation deadline so a browser request does not abandon the server
+    // operation and create a second subscription on the next activation.
   );
 }
 
 export function requestStartThread(options: ComposerTurnOptions) {
-  const gateway = useGatewayCatalogStore();
   const navigation = useGatewayNavigationStore();
   const hostId = navigation.selectedHostId;
   if (hostId === null) throw new Error("Host is required to start a thread");
@@ -53,10 +48,11 @@ export function requestStartThread(options: ComposerTurnOptions) {
       type: "thread.start",
       requestId,
       hostId,
-      projectId: navigation.selectedProjectId,
-      cwd: projectById(gateway.projects, navigation.selectedProjectId)?.remotePath,
+      cwd: navigation.selectedCwd,
+      provider: options.provider,
       model: options.model === "" ? undefined : options.model,
       effort: options.effort === "" ? undefined : options.effort,
+      summary: options.summary,
       approvalPolicy: options.approvalPolicy ?? undefined,
     }),
     expectThreadStarted,

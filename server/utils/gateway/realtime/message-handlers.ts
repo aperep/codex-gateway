@@ -1,13 +1,21 @@
 import { authenticatePeer } from "./handlers/auth";
-import { subscribeHostLifecycle, unsubscribeHostLifecycle } from "./handlers/host-lifecycle";
+import { restartHostDaemon } from "./handlers/host-daemon";
+import { configureWebPush, subscribeWebPush, unsubscribeWebPush } from "./handlers/web-push";
+import {
+  subscribeHostLifecycle,
+  unsubscribeHostLifecycle,
+  readHostUpgrades,
+} from "./handlers/host-lifecycle";
 import {
   activateThread,
+  readThreadSettings,
   startThread,
   subscribeThread,
   unsubscribeThread,
 } from "./handlers/thread-events";
 import { clearThreadGoal, getThreadGoal, setThreadGoal } from "./handlers/thread-goals";
-import { loadThreadItems, loadThreadTurns } from "./handlers/thread-turn-pages";
+import { loadThreadTimelinePage } from "./handlers/thread-timeline";
+import { readThreadItems } from "./handlers/thread-items";
 import {
   closeTerminal,
   listTerminals,
@@ -42,22 +50,43 @@ import {
   subscribeProjectFiles,
   unsubscribeProjectFiles,
 } from "./handlers/files";
+import { readProjectDefaults } from "./handlers/project-defaults";
+import {
+  handleHostMfaCancel,
+  handleHostMfaConnect,
+  handleHostMfaSubmit,
+} from "./handlers/host-mfa";
+import {
+  addThreadAttachment,
+  listThreadAttachments,
+  removeThreadAttachment,
+} from "./handlers/thread-attachments";
 
 export const realtimeMessageDispatcher = new RealtimeMessageDispatcher({
   "auth.authenticate": { auth: "public", handler: authenticatePeer },
   "host.lifecycle.subscribe": subscribeHostLifecycle,
   "host.lifecycle.unsubscribe": unsubscribeHostLifecycle,
+  "host.upgrades.read": readHostUpgrades,
+  "host.daemon.restart": restartHostDaemon,
+  "notification.webPush.configure": configureWebPush,
+  "notification.webPush.subscribe": subscribeWebPush,
+  "notification.webPush.unsubscribe": unsubscribeWebPush,
   "host.metrics.subscribe": subscribeHostMetrics,
   "host.metrics.unsubscribe": unsubscribeHostMetrics,
+  "project.defaults.read": readProjectDefaults,
   "tmux.sessions.subscribe": subscribeTmuxSessions,
   "tmux.sessions.refresh": refreshTmuxSessions,
   "tmux.sessions.unsubscribe": unsubscribeTmuxSessions,
   "thread.activate": activateThread,
+  "thread.settings.read": readThreadSettings,
   "thread.start": startThread,
   "thread.subscribe": subscribeThread,
   "thread.unsubscribe": unsubscribeThread,
-  "thread.turns.load": loadThreadTurns,
-  "thread.items.load": loadThreadItems,
+  "thread.timeline.load": loadThreadTimelinePage,
+  "thread.items.read": readThreadItems,
+  "thread.attachments.list": listThreadAttachments,
+  "thread.attachment.add": addThreadAttachment,
+  "thread.attachment.remove": removeThreadAttachment,
   "thread.goal.set": setThreadGoal,
   "thread.goal.get": getThreadGoal,
   "thread.goal.clear": clearThreadGoal,
@@ -82,5 +111,8 @@ export const realtimeMessageDispatcher = new RealtimeMessageDispatcher({
   "mcp.status.list": listMcpStatuses,
   "mcp.event.stream.start": startMcpEventStream,
   "mcp.event.stream.stop": stopMcpEventStream,
+  "host.mfa.submit": handleHostMfaSubmit,
+  "host.mfa.connect": handleHostMfaConnect,
+  "host.mfa.cancel": handleHostMfaCancel,
   ping,
 });

@@ -24,14 +24,21 @@ export class HostMetricsManager {
   readonly events = new HostMetricsEventBus();
   private runtimes = new Map<string, HostMetricsRuntime>();
 
-  constructor(private readonly ssh: SshConnectionPool) {}
+  constructor(private readonly ssh: SshConnectionPool) {
+    ssh.on("ready", ({ userId, host }) => {
+      if (this.events.hasSubscribers(userId, host.id)) this.ensureCollector(userId, host);
+    });
+  }
 
   subscribe(userId: number, host: HostRecord, listener: HostMetricsListener) {
     const unsubscribe = this.events.subscribe(userId, host.id, listener);
     this.ensureCollector(userId, host);
     return () => {
       unsubscribe();
-      if (!this.events.hasSubscribers(userId, host.id)) this.removeHost(userId, host.id);
+      if (!this.events.hasSubscribers(userId, host.id)) {
+        // Pause polling but retain the bounded history for the next visible panel.
+        this.runtimes.get(runtimeKey(userId, host.id))?.collector.stop();
+      }
     };
   }
 

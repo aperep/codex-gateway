@@ -1,4 +1,4 @@
-import type { HostRecord } from "~~/shared/types";
+import type { HostCreateInput, HostRecord, HostUpdateInput } from "~~/shared/types";
 import { gatewayApi } from "@/utils/gateway-api";
 import { useGatewayCatalogStore } from "@/stores/gateway-catalog";
 import { useGatewayConfigStore } from "@/stores/gateway-config";
@@ -18,7 +18,7 @@ export function createHostActions() {
     const views = useGatewayThreadViewStore();
     beginViewTransition();
     navigation.selectedHostId = hostId;
-    navigation.selectedProjectId = null;
+    navigation.selectedCwd = null;
     navigation.selectedThreadId = null;
     navigation.threads = [];
     views.resetCurrentView();
@@ -28,24 +28,21 @@ export function createHostActions() {
   }
 
   return {
-    async createHost(input: Record<string, unknown>) {
+    async createHost(input: HostCreateInput) {
       const sessionIsCurrent = captureSessionEpoch();
       const catalog = useGatewayCatalogStore();
       const config = useGatewayConfigStore();
-      const navigation = useGatewayNavigationStore();
       const host = await gatewayApi<HostRecord>("/api/hosts", { method: "POST", body: input });
       if (!sessionIsCurrent()) return host;
       catalog.hosts.push(host);
-      config.setCatalog(catalog.hosts, catalog.projects);
-      selectHostState(host.id);
-      writeGatewayRouteSelection({ hostId: host.id, projectId: null, threadId: null });
-      await Promise.all([catalog.listModels(), navigation.listThreads()]);
-      catalog.ensureSelectedProject();
-      if (navigation.selectedProjectId !== null) await navigation.listThreads();
+      config.setCatalog(catalog.hosts);
+      // Registering a connection is a management action, not navigation. The server owns its
+      // connection/upgrade lifecycle; selecting this host owns model and thread discovery.
+      // Late discovery must not change the current conversation or close a reopened mobile sheet.
       return host;
     },
 
-    async updateHost(hostId: number, input: Record<string, unknown>) {
+    async updateHost(hostId: number, input: HostUpdateInput) {
       const sessionIsCurrent = captureSessionEpoch();
       const catalog = useGatewayCatalogStore();
       const host = await gatewayApi<HostRecord>(`/api/hosts/${hostId}`, {
@@ -56,7 +53,7 @@ export function createHostActions() {
       catalog.hosts = catalog.hosts.map((candidate) =>
         candidate.id === hostId ? host : candidate,
       );
-      useGatewayConfigStore().setCatalog(catalog.hosts, catalog.projects);
+      useGatewayConfigStore().setCatalog(catalog.hosts);
       return host;
     },
 
@@ -70,29 +67,16 @@ export function createHostActions() {
       gatewayDomainEvents.emit("host-removed", { hostId });
       useGatewayTmuxStore().removeHost(hostId);
       catalog.hosts = catalog.hosts.filter((host) => host.id !== hostId);
-      const removedProjectIds = new Set(
-        catalog.projects
-          .filter((project) => project.hostId === hostId)
-          .map((project) => project.id),
-      );
       catalog.projects = catalog.projects.filter((project) => project.hostId !== hostId);
-      catalog.projectDirectoryAvailability = Object.fromEntries(
-        Object.entries(catalog.projectDirectoryAvailability).filter(
-          ([projectId]) => !removedProjectIds.has(Number(projectId)),
-        ),
-      );
-      config.gatewayConfig.projects = config.gatewayConfig.projects.filter(
-        (project) => project.hostId !== hostId,
-      );
       catalog.hostConnectionStatuses = omitKey(catalog.hostConnectionStatuses, hostId);
       config.gatewayConfig.pinnedThreads = config.gatewayConfig.pinnedThreads.filter(
         (thread) => thread.hostId !== hostId,
       );
-      config.setCatalog(catalog.hosts, catalog.projects);
+      config.setCatalog(catalog.hosts);
       if (navigation.selectedHostId === hostId) {
         selectHostState(catalog.hosts[0]?.id ?? null);
         writeGatewayRouteSelection(
-          { hostId: navigation.selectedHostId, projectId: null, threadId: null },
+          { hostId: navigation.selectedHostId, cwd: null, threadId: null },
           { replace: true },
         );
         if (navigation.selectedHostId) {
@@ -107,11 +91,11 @@ export function createHostActions() {
       const navigation = useGatewayNavigationStore();
       cacheSelectedThreadView();
       selectHostState(hostId);
-      writeGatewayRouteSelection({ hostId, projectId: null, threadId: null });
+      writeGatewayRouteSelection({ hostId, cwd: null, threadId: null });
       await catalog.listModels();
       await navigation.listThreads();
       catalog.ensureSelectedProject();
-      if (navigation.selectedProjectId !== null) await navigation.listThreads();
+      if (navigation.selectedCwd !== null) await navigation.listThreads();
     },
   };
 }

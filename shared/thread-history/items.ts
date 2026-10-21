@@ -68,6 +68,8 @@ export function mergeItemIntoLatestTurn(
       turn.items[index] = mergeThreadItem(existingItem, item);
     }
   } else {
+    // App Server notification order is the timeline order. Presentation code may hide process
+    // items behind the intermediate disclosure, but it must not move transcript items around.
     turn.items.push(item);
   }
   turns[turnIndex] = turn;

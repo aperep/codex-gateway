@@ -1,6 +1,6 @@
 export interface BrowserPreviewTarget {
   hostId: number;
-  projectId?: number | null;
+  cwd?: string | null;
   threadId?: string | null;
   panelId: string;
   targetUrl: string;

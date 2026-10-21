@@ -60,8 +60,11 @@ export const useGatewayWorkspaceLayoutStore = defineStore("gateway-workspace-lay
 
 export function workspaceLayoutScopeKey(
   hostId: number | null,
-  projectId: number | null,
+  cwd: string | null,
   threadId: string | null,
 ) {
-  return `${hostId ?? "host"}:${projectId ?? "project"}:${threadId ?? "thread"}`;
+  // Once a thread exists, its identity is sufficient. Hydrating cwd must not remount Dockview.
+  return threadId !== null
+    ? JSON.stringify([hostId, "thread", threadId])
+    : JSON.stringify([hostId, "directory", cwd]);
 }

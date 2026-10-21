@@ -26,9 +26,7 @@ export default defineGatewayConfigMutationHandler(async (event) => {
     const remaining = config.pinnedThreads.filter(
       (thread) => thread.hostId !== hostId || thread.threadId !== threadId,
     );
-    const nextThread = body.pinned
-      ? { ...body.thread, projectId: body.thread.projectId ?? null }
-      : null;
+    const nextThread = body.pinned ? body.thread : null;
     runtimeConfigStore.replacePinnedThreads(nextThread ? [nextThread, ...remaining] : remaining);
     return runtimeConfigStore.export();
   });

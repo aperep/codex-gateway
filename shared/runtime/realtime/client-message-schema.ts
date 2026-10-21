@@ -1,5 +1,9 @@
 import { z } from "zod";
 import type { RealtimeClientMessage } from "../../types";
+import { agentProviderIdSchema } from "../../agent/providers";
+import { reasoningSummarySchema } from "../../reasoning-summary";
+import { uploadedFileSchema } from "../uploaded-file";
+import { webPushEndpointSchema, webPushSubscriptionSchema } from "../../notifications/web-push";
 import {
   nonEmptyString,
   nonNegativeId,
@@ -15,15 +19,6 @@ const imageInput = z
     path: z.string().optional(),
     url: z.string().optional(),
     detail: z.enum(["low", "high", "auto", "original"]).optional(),
-  })
-  .strict();
-const fileInput = z
-  .object({
-    path: z.string(),
-    name: z.string(),
-    mimeType: nullableString,
-    size: z.number().nonnegative(),
-    isImage: z.boolean(),
   })
   .strict();
 const collaborationMode = z
@@ -47,13 +42,44 @@ const collaborationMode = z
 export const realtimeClientMessageSchema: z.ZodType<RealtimeClientMessage> = z.discriminatedUnion(
   "type",
   [
+    z.object({ type: z.literal("notification.webPush.configure"), ...requestIdField }).strict(),
+    z
+      .object({
+        type: z.literal("notification.webPush.subscribe"),
+        ...requestIdField,
+        subscription: webPushSubscriptionSchema,
+      })
+      .strict(),
+    z
+      .object({
+        type: z.literal("notification.webPush.unsubscribe"),
+        ...requestIdField,
+        endpoint: webPushEndpointSchema,
+      })
+      .strict(),
     z.object({ type: z.literal("auth.authenticate"), token: nonEmptyString }).strict(),
     z.object({ type: z.literal("host.lifecycle.subscribe") }).strict(),
     z.object({ type: z.literal("host.lifecycle.unsubscribe") }).strict(),
+    z.object({ type: z.literal("host.upgrades.read"), ...requestIdField }).strict(),
+    z
+      .object({ type: z.literal("host.daemon.restart"), ...requestIdField, hostId: positiveId })
+      .strict(),
     z
       .object({ type: z.literal("host.metrics.subscribe"), ...requestIdField, hostId: positiveId })
       .strict(),
     z.object({ type: z.literal("host.metrics.unsubscribe"), hostId: positiveId }).strict(),
+    z.object({ type: z.literal("host.mfa.connect"), hostId: positiveId }).strict(),
+    z.object({ type: z.literal("host.mfa.submit"), hostId: positiveId, code: z.string() }).strict(),
+    z.object({ type: z.literal("host.mfa.cancel"), hostId: positiveId }).strict(),
+    z
+      .object({
+        type: z.literal("project.defaults.read"),
+        ...requestIdField,
+        hostId: positiveId,
+        cwd: nonEmptyString,
+        provider: agentProviderIdSchema.optional(),
+      })
+      .strict(),
     z
       .object({ type: z.literal("tmux.sessions.subscribe"), ...requestIdField, hostId: positiveId })
       .strict(),
@@ -66,7 +92,6 @@ export const realtimeClientMessageSchema: z.ZodType<RealtimeClientMessage> = z.d
         type: z.literal("thread.activate"),
         ...requestIdField,
         ...threadScopeFields,
-        projectId: positiveId.nullable().optional(),
         limit: positiveId.optional(),
       })
       .strict(),
@@ -81,23 +106,56 @@ export const realtimeClientMessageSchema: z.ZodType<RealtimeClientMessage> = z.d
     z.object({ type: z.literal("thread.unsubscribe"), ...threadScopeFields }).strict(),
     z
       .object({
-        type: z.literal("thread.turns.load"),
+        type: z.literal("thread.settings.read"),
         ...requestIdField,
         ...threadScopeFields,
-        cursor: nullableString,
-        limit: positiveId.optional(),
-        sortDirection: z.enum(["asc", "desc"]).optional(),
       })
       .strict(),
     z
       .object({
-        type: z.literal("thread.items.load"),
+        type: z.literal("thread.timeline.load"),
+        ...requestIdField,
+        ...threadScopeFields,
+        cursor: nullableString,
+        limit: positiveId.optional(),
+      })
+      .strict(),
+    z
+      .object({
+        type: z.literal("thread.items.read"),
         ...requestIdField,
         ...threadScopeFields,
         turnId: nonEmptyString,
+        itemIds: z.array(nonEmptyString).min(1).max(100),
+        outputEnd: z.number().int().nonnegative().optional(),
+      })
+      .strict(),
+    z
+      .object({
+        type: z.literal("thread.attachments.list"),
+        ...requestIdField,
+        ...threadScopeFields,
         cursor: nullableString,
         limit: positiveId.optional(),
-        sortDirection: z.enum(["asc", "desc"]).optional(),
+      })
+      .strict(),
+    z
+      .object({
+        type: z.literal("thread.attachment.add"),
+        ...requestIdField,
+        ...threadScopeFields,
+        attachmentType: nonEmptyString,
+        identityKey: nonEmptyString,
+        payload: z.unknown(),
+      })
+      .strict(),
+    z
+      .object({
+        type: z.literal("thread.attachment.remove"),
+        ...requestIdField,
+        ...threadScopeFields,
+        attachmentType: nonEmptyString,
+        identityKey: nonEmptyString,
       })
       .strict(),
     z
@@ -105,10 +163,11 @@ export const realtimeClientMessageSchema: z.ZodType<RealtimeClientMessage> = z.d
         type: z.literal("thread.start"),
         ...requestIdField,
         hostId: positiveId,
-        projectId: positiveId.nullable().optional(),
         cwd: nullableString,
+        provider: agentProviderIdSchema.optional(),
         model: nullableString,
         effort: nullableString,
+        summary: reasoningSummarySchema.nullable().optional(),
         approvalPolicy,
       })
       .strict(),
@@ -117,16 +176,16 @@ export const realtimeClientMessageSchema: z.ZodType<RealtimeClientMessage> = z.d
         type: z.literal("turn.start"),
         ...requestIdField,
         ...threadScopeFields,
-        projectId: positiveId,
         text: z.string(),
         clientUserMessageId: nullableString,
         cwd: nullableString,
         model: nullableString,
         effort: nullableString,
+        summary: reasoningSummarySchema.nullable().optional(),
         approvalPolicy,
         collaborationMode,
         images: z.array(imageInput).optional(),
-        files: z.array(fileInput).optional(),
+        files: z.array(uploadedFileSchema).optional(),
         references: z
           .array(
             z
@@ -146,11 +205,11 @@ export const realtimeClientMessageSchema: z.ZodType<RealtimeClientMessage> = z.d
         type: z.literal("turn.steer"),
         ...requestIdField,
         ...threadScopeFields,
-        projectId: positiveId,
         expectedTurnId: nonEmptyString,
         text: z.string(),
         clientUserMessageId: nullableString,
         images: z.array(imageInput).optional(),
+        files: z.array(uploadedFileSchema).optional(),
         references: z
           .array(
             z
@@ -181,6 +240,7 @@ export const realtimeClientMessageSchema: z.ZodType<RealtimeClientMessage> = z.d
         turnId: nonEmptyString,
         model: nullableString,
         effort: nullableString,
+        summary: reasoningSummarySchema.nullable().optional(),
       })
       .strict(),
     z
@@ -247,7 +307,6 @@ export const realtimeClientMessageSchema: z.ZodType<RealtimeClientMessage> = z.d
         type: z.literal("terminal.open"),
         ...requestIdField,
         hostId: positiveId,
-        projectId: positiveId.nullable().optional(),
         threadId: nullableString,
         cwd: nullableString,
         title: nullableString,
@@ -276,7 +335,7 @@ export const realtimeClientMessageSchema: z.ZodType<RealtimeClientMessage> = z.d
         type: z.literal("browser.open"),
         ...requestIdField,
         hostId: positiveId,
-        projectId: positiveId.nullable().optional(),
+        cwd: nullableString,
         threadId: nullableString,
         panelId: nonEmptyString,
         targetUrl: nonEmptyString,
@@ -299,7 +358,7 @@ export const realtimeClientMessageSchema: z.ZodType<RealtimeClientMessage> = z.d
         type: z.literal("file.search"),
         ...requestIdField,
         hostId: positiveId,
-        projectId: positiveId,
+        cwd: nonEmptyString,
         query: z.string().max(500),
         cancellationToken: nonEmptyString,
       })
@@ -309,7 +368,7 @@ export const realtimeClientMessageSchema: z.ZodType<RealtimeClientMessage> = z.d
         type: z.literal("file.watch.subscribe"),
         ...requestIdField,
         ...threadScopeFields,
-        projectId: positiveId,
+        cwd: nonEmptyString,
         paths: z.array(nonEmptyString).min(1).max(256),
       })
       .strict(),
@@ -317,7 +376,7 @@ export const realtimeClientMessageSchema: z.ZodType<RealtimeClientMessage> = z.d
       .object({
         type: z.literal("file.watch.unsubscribe"),
         ...threadScopeFields,
-        projectId: positiveId,
+        cwd: nonEmptyString,
         subscriptionId: nonEmptyString,
       })
       .strict(),
@@ -326,7 +385,7 @@ export const realtimeClientMessageSchema: z.ZodType<RealtimeClientMessage> = z.d
         type: z.literal("file.git.compare"),
         ...requestIdField,
         hostId: positiveId,
-        projectId: positiveId,
+        cwd: nonEmptyString,
         path: nonEmptyString,
       })
       .strict(),
@@ -335,7 +394,7 @@ export const realtimeClientMessageSchema: z.ZodType<RealtimeClientMessage> = z.d
         type: z.literal("file.git.workspace.inspect"),
         ...requestIdField,
         hostId: positiveId,
-        projectId: positiveId,
+        cwd: nonEmptyString,
         rootPath: nonEmptyString,
       })
       .strict(),

@@ -23,7 +23,6 @@ import {
 const props = withDefaults(
   defineProps<{
     hostId: number;
-    projectId: number | null;
     rootPath: string;
     presentation?: "sidebar" | "review";
     canPromote?: boolean;
@@ -38,7 +37,6 @@ const emit = defineEmits<{
 }>();
 const git = useFileGitWorkspace({
   hostId: () => props.hostId,
-  projectId: () => props.projectId,
   rootPath: () => props.rootPath,
 });
 const selected = ref<GitChangeTreeNode>();
@@ -197,9 +195,9 @@ function flattenFiles(nodes: GitChangeTreeNode[]) {
       </TreeRoot>
     </section>
     <GitChangeDiffViewer
-      v-if="presentation === 'review' && selectedFile && projectId !== null"
+      v-if="presentation === 'review' && selectedFile"
       :host-id="hostId"
-      :project-id="projectId"
+      :cwd="rootPath"
       :path="selectedFile.path"
       :change="selectedFile.change"
     />

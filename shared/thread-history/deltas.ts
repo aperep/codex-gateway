@@ -27,7 +27,9 @@ export function appendAgentDelta(
       type: "agentMessage",
       id: itemIdValue,
       text: delta,
-      phase: "final_answer",
+      // Text deltas carry no phase. Only official item payloads can classify the message;
+      // guessing final_answer here would promote commentary/partial_answer into a footer.
+      phase: null,
       turnId: turnIdValue,
       status: "inProgress",
     }),
@@ -59,6 +61,41 @@ export function appendReasoningSummaryDelta(
     summary[index] = `${stringFromUnknown(summary[index]) ?? ""}${delta}`;
     return { ...item, summary };
   });
+}
+
+export function addReasoningSummaryPart(
+  history: ThreadHistoryState | null,
+  currentThread: ThreadHistorySeed | null,
+  threadId: string,
+  params: { itemId: string; turnId: string; summaryIndex: number },
+): ThreadHistoryState {
+  return updateItemInTurnById(
+    history,
+    currentThread,
+    threadId,
+    params.turnId,
+    params.itemId,
+    () => ({
+      type: "reasoning",
+      id: params.itemId,
+      turnId: params.turnId,
+      status: "inProgress",
+      summary: summaryWithPart([], params.summaryIndex),
+    }),
+    (item) => ({
+      ...item,
+      summary: summaryWithPart(
+        Array.isArray(item.summary) ? item.summary : [],
+        params.summaryIndex,
+      ),
+    }),
+  );
+}
+
+function summaryWithPart(summary: unknown[], summaryIndex: number) {
+  const next = [...summary];
+  while (next.length <= summaryIndex) next.push("");
+  return next;
 }
 
 export function appendReasoningTextDelta(

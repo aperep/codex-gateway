@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { promisify } from "node:util";
 import type { Page } from "@playwright/test";
+import { z } from "zod";
 import { expect, test } from "./fixtures/remote-workspace";
 import {
   authenticatedFetch,
@@ -24,8 +25,13 @@ test("accounts retain only their assigned folder and conversations on a shared H
     runtimeUpdates.set(target, updates);
     target.on("websocket", (socket) =>
       socket.on("framereceived", ({ payload }) => {
-        const message = JSON.parse(payload.toString());
-        if (message.type === "thread.runtime.updated") updates.push(message.update);
+        const message = z
+          .object({
+            type: z.literal("thread.runtime.updated"),
+            update: z.object({ threadId: z.string(), status: z.string() }),
+          })
+          .safeParse(JSON.parse(payload.toString()));
+        if (message.success) updates.push(message.data.update);
       }),
     );
   };
@@ -35,7 +41,10 @@ test("accounts retain only their assigned folder and conversations on a shared H
   const root = `/tmp/gateway-account-scope-${randomUUID()}`;
   const alice = `${root}/alice`;
   const bob = `${root}/alice-other`;
-  await execRemoteSsh(remote, `mkdir -p '${alice}' '${bob}'`);
+  await execRemoteSsh(
+    remote,
+    `mkdir -p '${alice}' '${bob}' && ln -s '${bob}' '${alice}/escape' && ln -s '${alice}' '${bob}/escape'`,
+  );
   const host = await authenticatedFetch(
     page,
     {
@@ -51,7 +60,7 @@ test("accounts retain only their assigned folder and conversations on a shared H
         proxyUrl: null,
       },
     },
-    (value) => value as { id: number },
+    (value) => z.object({ id: z.number().int().positive() }).parse(value),
   );
   const startThread = async (cwd: string) => {
     const result = await sendRealtimeRequest(page, {
@@ -86,10 +95,15 @@ test("accounts retain only their assigned folder and conversations on a shared H
     await otherPage.getByTestId("login-password").fill(E2E_PASSWORD);
     await otherPage.getByTestId("login-submit").click();
     await openApp(otherPage, { resetConfig: false, interceptRealtime: false });
-    const config = await authenticatedFetch(
-      page,
-      { url: "/api/config/export" },
-      (value) => value as { version: number; hosts: unknown[]; pinnedThreads: unknown[] },
+    const config = await authenticatedFetch(page, { url: "/api/config/export" }, (value) =>
+      z
+        .object({
+          version: z.literal(2),
+          hosts: z.array(z.unknown()),
+          pinnedThreads: z.array(z.unknown()),
+        })
+        .loose()
+        .parse(value),
     );
     for (const [target, cwd] of [
       [page, alice],
@@ -111,7 +125,7 @@ test("accounts retain only their assigned folder and conversations on a shared H
       const folders = await authenticatedFetch(
         target,
         { url: `/api/projects?hostId=${host.id}` },
-        (value) => value as Array<{ remotePath: string }>,
+        (value) => z.array(z.object({ remotePath: z.string() })).parse(value),
       );
       expect(folders.map((folder) => folder.remotePath)).toEqual([cwd]);
       await expect(target.getByTestId(`project-button-${cwd}`)).toBeVisible();
@@ -122,20 +136,19 @@ test("accounts retain only their assigned folder and conversations on a shared H
       let cursor: string | null = null;
       do {
         const query = new URLSearchParams({ hostId: String(host.id), limit: "1" });
-        if (cursor) query.set("cursor", cursor);
-        const result = await authenticatedFetch(
-          target,
-          { url: `/api/threads?${query}` },
-          (value) =>
-            value as {
-              data: Array<{ id: string; cwd?: string | null }>;
-              nextCursor?: string | null;
-            },
+        if (cursor !== null && cursor !== "") query.set("cursor", cursor);
+        const result = await authenticatedFetch(target, { url: `/api/threads?${query}` }, (value) =>
+          z
+            .object({
+              data: z.array(z.object({ id: z.string(), cwd: z.string().nullish() })),
+              nextCursor: z.string().nullish(),
+            })
+            .parse(value),
         );
         expect(result.data.every((thread) => thread.cwd === cwd)).toBe(true);
         found.push(...result.data.map((thread) => thread.id));
         cursor = result.nextCursor ?? null;
-      } while (cursor);
+      } while (cursor !== null && cursor !== "");
       expect(found).toContain(cwd === alice ? aliceThread : bobThread);
       expect(found).not.toContain(cwd === alice ? bobThread : aliceThread);
       const forbidden = await sendRealtimeRawRequest(target, {
@@ -158,7 +171,7 @@ test("accounts retain only their assigned folder and conversations on a shared H
         {
           url: `/api/remote/directories?${new URLSearchParams({ hostId: String(host.id), path: root })}`,
         },
-        (value) => value as { entries: Array<{ path: string }> },
+        (value) => z.object({ entries: z.array(z.object({ path: z.string() })) }).parse(value),
       );
       expect(parent.entries.map((entry) => entry.path)).toEqual([cwd]);
       const browseStatus = await target.evaluate(
@@ -174,6 +187,35 @@ test("accounts retain only their assigned folder and conversations on a shared H
         { hostId: host.id, path: cwd === alice ? bob : alice },
       );
       expect(browseStatus).toBe(403);
+      const uploadStatuses = await target.evaluate(
+        async ({ hostId, cwd, foreign }) => {
+          const statuses: number[] = [];
+          for (const attempt of [
+            { rootPath: cwd, path: cwd },
+            { rootPath: cwd, path: foreign },
+            { rootPath: foreign, path: foreign },
+            { rootPath: cwd, path: `${cwd}/escape` },
+          ]) {
+            const form = new FormData();
+            form.append("files", new File([cwd], "scoped-upload.txt"));
+            const response = await fetch(
+              `/api/remote/uploads?${new URLSearchParams({ hostId: String(hostId), ...attempt })}`,
+              {
+                method: "POST",
+                headers: {
+                  authorization: `Bearer ${localStorage.getItem("codex-gateway-auth-token")}`,
+                },
+                body: form,
+              },
+            );
+            statuses.push(response.status);
+          }
+          return statuses;
+        },
+        { hostId: host.id, cwd, foreign: cwd === alice ? bob : alice },
+      );
+      expect(uploadStatuses).toEqual([200, 403, 403, 403]);
+      expect((await execRemoteSsh(remote, `cat '${cwd}/scoped-upload.txt'`)).stdout).toBe(cwd);
     }
     for (const updates of runtimeUpdates.values()) updates.length = 0;
     await sendRealtimeRequest(otherPage, {

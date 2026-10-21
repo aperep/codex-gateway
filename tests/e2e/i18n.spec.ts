@@ -21,7 +21,7 @@ test("requires bearer auth for protected HTTP APIs", async ({ page }) => {
   expect(config.version).toBe(2);
 });
 
-test("defaults to Chinese and can switch to English", async ({ page }) => {
+test("uses the test locale and can switch to English", async ({ page }) => {
   await openApp(page);
   await expect(page.getByText("设置")).toBeVisible();
   await page.getByTestId("settings-toggle").click();

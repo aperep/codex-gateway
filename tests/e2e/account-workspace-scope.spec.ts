@@ -3,7 +3,13 @@ import { randomUUID } from "node:crypto";
 import { promisify } from "node:util";
 import type { Page } from "@playwright/test";
 import { expect, test } from "./fixtures/remote-workspace";
-import { authenticatedFetch, E2E_PASSWORD, openApp, reloadApp } from "./helpers/app";
+import {
+  authenticatedFetch,
+  E2E_PASSWORD,
+  openApp,
+  reloadApp,
+  resetGatewayConfig,
+} from "./helpers/app";
 import { execRemoteSsh } from "./helpers/remote-codex";
 import { sendRealtimeRawRequest, sendRealtimeRequest } from "./helpers/realtime";
 
@@ -188,6 +194,24 @@ test("accounts retain only their assigned folder and conversations on a shared H
       .toBe(true);
     expect(runtimeUpdates.get(page)?.some((update) => update.threadId === bobThread)).toBe(false);
   } finally {
-    await otherContext.close();
+    try {
+      for (const [target, threadId] of [
+        [page, aliceThread],
+        [otherPage, bobThread],
+      ] as const) {
+        await authenticatedFetch(
+          target,
+          {
+            url: "/api/e2e/archive-threads",
+            method: "POST",
+            body: { hostId: host.id, threadId },
+          },
+          () => undefined,
+        );
+        await resetGatewayConfig(target);
+      }
+    } finally {
+      await otherContext.close();
+    }
   }
 });

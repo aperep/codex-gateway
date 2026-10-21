@@ -123,7 +123,7 @@ fi
 pid=""
 inode=""
 if [ -r /proc/net/unix ]; then
-  inode="$(awk -v socket="$socket" '$NF == socket { print $7; exit }' /proc/net/unix)"
+  inode="$(awk -v socket="$(readlink -f "$socket" 2>/dev/null || printf "%s" "$socket")" '$NF == socket { print $7; exit }' /proc/net/unix)"
 fi
 if [ -n "$inode" ]; then
   for fd in /proc/[0-9]*/fd/*; do
@@ -136,7 +136,7 @@ if [ -n "$inode" ]; then
   done
 fi
 if [ -z "$pid" ] && command -v ss >/dev/null 2>&1; then
-  pid="$(ss -xlpH 2>/dev/null | awk -v socket="$socket" '
+  pid="$(ss -xlpH 2>/dev/null | awk -v socket="$(readlink -f "$socket" 2>/dev/null || printf "%s" "$socket")" '
     index($0, socket) {
       if (match($0, /pid=[0-9]+/)) {
         print substr($0, RSTART + 4, RLENGTH - 4)
@@ -247,7 +247,7 @@ codex_gateway_socket_has_listener() {
     return 1
   fi
   if [ -r /proc/net/unix ]; then
-    awk -v socket="$socket" '$NF == socket && $4 == "00010000" { found = 1 } END { exit found ? 0 : 1 }' /proc/net/unix
+    awk -v socket="$(readlink -f "$socket" 2>/dev/null || printf "%s" "$socket")" '$NF == socket && $4 == "00010000" { found = 1 } END { exit found ? 0 : 1 }' /proc/net/unix
     return $?
   fi
   return 0

@@ -7,7 +7,7 @@ import type {
 } from "~~/shared/types";
 import type { SshConnectionPool } from "../infra/ssh/ssh-connection";
 import { HostMetricsCollector } from "./collector";
-import { HostMetricsEventBus } from "./events";
+import { HostMetricsEventBus, type HostMetricsListener } from "./events";
 
 const MAX_SAMPLES = 300;
 
@@ -24,8 +24,15 @@ export class HostMetricsManager {
   readonly events = new HostMetricsEventBus();
   private runtimes = new Map<string, HostMetricsRuntime>();
 
-  constructor(private readonly ssh: SshConnectionPool) {
-    ssh.on("ready", ({ userId, host }) => this.ensureCollector(userId, host));
+  constructor(private readonly ssh: SshConnectionPool) {}
+
+  subscribe(userId: number, host: HostRecord, listener: HostMetricsListener) {
+    const unsubscribe = this.events.subscribe(userId, host.id, listener);
+    this.ensureCollector(userId, host);
+    return () => {
+      unsubscribe();
+      if (!this.events.hasSubscribers(userId, host.id)) this.removeHost(userId, host.id);
+    };
   }
 
   snapshot(userId: number, hostId: number): HostMetricsSnapshot {

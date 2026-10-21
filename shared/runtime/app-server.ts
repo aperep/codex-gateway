@@ -296,7 +296,7 @@ export const appServerThreadSchema = z
       .nullable(),
     turns: z.array(threadTurnSchema),
   })
-  .strict();
+  .loose();
 
 export const gatewayThreadSchema = appServerThreadSchema.omit({ projectId: true }).extend({
   appServerProjectId: z.string().nullable(),

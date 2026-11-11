@@ -4,6 +4,7 @@ import type { AgentProviderId } from "../agent/providers";
 import type { AppServerThread } from "../runtime/app-server";
 import type { ReasoningSummary } from "../reasoning-summary";
 import type { UploadedFileRecord } from "./files";
+import type { SandboxMode, SandboxPolicy } from "../permissions";
 
 export type { ReasoningSummary } from "../reasoning-summary";
 
@@ -74,6 +75,8 @@ export interface ThreadOpenResult {
   /** Cursor for the oldest currently cached timeline page; null means no older page exists. */
   oldestTimelineCursor: string | null;
   recentEvents: GatewayEvent[];
+  /** The thread is owned by another app-server process and was opened without a writer lease. */
+  readOnly?: boolean;
 }
 
 /** Persisted by the official app-server thread attachment store. */
@@ -107,6 +110,7 @@ export interface ThreadSettingsState {
   effort?: ReasoningEffort | null;
   summary?: ReasoningSummary | null;
   approvalPolicy?: ApprovalPolicy | null;
+  sandboxPolicy?: SandboxPolicy | null;
   collaborationMode?: ThreadCollaborationMode | null;
 }
 
@@ -145,6 +149,7 @@ export interface ComposerTurnOptions {
   effort?: ReasoningEffort | null;
   summary?: ReasoningSummary | null;
   approvalPolicy?: ApprovalPolicy | null;
+  sandbox?: SandboxMode;
   collaborationMode?: ThreadCollaborationMode | null;
   images?: Array<{
     path?: string;

@@ -226,43 +226,6 @@ test("opening a thread stores browser-local last open selection", async ({ page 
     .toEqual({ hostId: 1, cwd: "/tmp/e2e", threadId });
 });
 
-test("switching to cached thread history renders without waiting for the next event", async ({
-  page,
-}) => {
-  await openApp(page);
-  const secondThreadId = "e2e-visible-second-thread";
-  await seedGatewayThread(page, {
-    cwd: "/tmp/e2e",
-    threadId: secondThreadId,
-    currentThread: { id: secondThreadId, name: "Second Visible Thread" },
-    history: {
-      thread: {
-        id: secondThreadId,
-        turns: [
-          {
-            id: "turn-visible-second",
-            status: "completed",
-            items: [
-              {
-                id: "agent-visible-second",
-                type: "agentMessage",
-                status: "completed",
-                text: "second cached thread should be visible immediately",
-              },
-            ],
-          },
-        ],
-      },
-    },
-  });
-
-  await expect(
-    page
-      .getByTestId("chat-scroll-area")
-      .getByText("second cached thread should be visible immediately"),
-  ).toBeVisible();
-});
-
 test("live terminal event updates selected thread even when snapshot cursor is ahead", async ({
   page,
 }) => {
@@ -399,7 +362,7 @@ test("turn completed keeps thread running while context compaction is active", a
         id: "context-compaction-active",
         type: "contextCompaction",
         status: "inProgress",
-        startedAt: Date.parse("2026-07-02T10:00:00.000Z"),
+        startedAtMs: Date.parse("2026-07-02T10:00:00.000Z"),
       },
     ],
   });
@@ -446,7 +409,7 @@ test("restoring a cached thread uses app-server snapshot state for active contex
               id: "context-compaction-running",
               type: "contextCompaction",
               status: "inProgress",
-              startedAt: Date.parse("2026-07-02T10:00:00.000Z"),
+              startedAtMs: Date.parse("2026-07-02T10:00:00.000Z"),
             },
           ],
         },

@@ -30,10 +30,27 @@ export async function subscribeThread(
   const state = stateFor(peer);
   const key = threadTopicKey(hostId, threadId);
   state.threadUnsubscribers.get(key)?.();
-
-  const host = requireRecord(hostStore.getWithSecret(hostId), "Host not found");
-  const afterId = Number(message.afterId ?? 0);
-  subscribeThreadEvents(peer, host, threadId, afterId, message.afterEpoch);
+  const activation = beginThreadActivation(peer, key);
+  try {
+    if (activation.signal.aborted) return;
+    const host = requireRecord(hostStore.getWithSecret(hostId), "Host not found");
+    const lease = threadBroker.retainThreadActivation(host, threadId);
+    let transferred = false;
+    try {
+      const controller = await lease.ready;
+      if (activation.signal.aborted) return;
+      const afterId = Number(message.afterId ?? 0);
+      subscribeThreadEvents(peer, host, threadId, afterId, message.afterEpoch, {
+        lease,
+        controller,
+      });
+      transferred = true;
+    } finally {
+      if (!transferred) lease.release();
+    }
+  } finally {
+    finishThreadActivation(peer, key, activation);
+  }
 }
 
 export async function readThreadSettings(
@@ -60,21 +77,31 @@ export async function activateThread(
   const input = threadOpenSchema.parse(message);
 
   const host = requireRecord(hostStore.getWithSecret(input.hostId), "Host not found");
+  const key = threadTopicKey(input.hostId, input.threadId);
+  const pending = beginThreadActivation(peer, key);
+  if (pending.signal.aborted) return;
   // Capture the replay cursor before reading the snapshot. Events emitted while thread/read is in
   // flight are then replayed by subscribeThreadEvents; capturing it afterwards would pair an old
   // snapshot with a newer cursor and permanently skip those events.
-  const lastEventId = gatewayEventStore.latestId(input.hostId, input.threadId);
-  const eventEpoch = gatewayEventStore.epoch(input.hostId);
   const activationLease = threadBroker.retainThreadActivation(host, input.threadId);
+  // Codex RPC reads are not cancellable. Keep their lease until finally, then dispose; cancelling
+  // the browser owner prevents late attachment without closing a controller during thread/resume.
   let leaseTransferred = false;
   try {
     const activationController = await activationLease.ready;
+    if (pending.signal.aborted) return;
+    // Authentication establishes the remote identity. Capture its shared cursor after acquiring
+    // that lease, but before reading history, so another user's in-flight events are replayed.
+    const lastEventId = gatewayEventStore.latestId(input.hostId, input.threadId);
+    const eventEpoch = gatewayEventStore.epoch(input.hostId);
     const result = await threadBroker.openThread(
       host,
       input.threadId,
       input.limit,
       activationController,
+      input.retryWriter,
     );
+    if (pending.signal.aborted) return;
     sendRealtimePeerMessage(peer, {
       type: "thread.snapshot",
       requestId: message.requestId,
@@ -84,12 +111,17 @@ export async function activateThread(
       eventEpoch,
       ...result,
     });
-    subscribeThreadEvents(peer, host, input.threadId, lastEventId, eventEpoch, {
-      lease: activationLease,
-      controller: activationController,
-    });
-    leaseTransferred = true;
-    if (result.threadSettings === null || result.threadSettings === undefined) {
+    if (result.readOnly !== true) {
+      subscribeThreadEvents(peer, host, input.threadId, lastEventId, eventEpoch, {
+        lease: activationLease,
+        controller: activationController,
+      });
+      leaseTransferred = true;
+    }
+    if (
+      result.readOnly !== true &&
+      (result.threadSettings === null || result.threadSettings === undefined)
+    ) {
       // A cache hit can predate settings hydration. Resolve only that metadata after the snapshot;
       // cold opens already obtain it from the combined thread/resume response above.
       void runPeerScoped(peer, () =>
@@ -104,6 +136,7 @@ export async function activateThread(
       );
     }
   } finally {
+    finishThreadActivation(peer, key, pending);
     if (!leaseTransferred) activationLease.release();
   }
 }
@@ -147,8 +180,24 @@ export function unsubscribeThread(
   }
   const state = stateFor(peer);
   const key = threadTopicKey(hostId, threadId);
+  state.threadActivations.get(key)?.abort();
+  state.threadActivations.delete(key);
   state.threadUnsubscribers.get(key)?.();
   state.threadUnsubscribers.delete(key);
+}
+
+function beginThreadActivation(peer: RealtimePeer, key: string) {
+  const state = stateFor(peer);
+  state.threadActivations.get(key)?.abort();
+  const activation = new AbortController();
+  if (state.deliveryClosed === true) activation.abort();
+  else state.threadActivations.set(key, activation);
+  return activation;
+}
+
+function finishThreadActivation(peer: RealtimePeer, key: string, activation: AbortController) {
+  const pending = stateFor(peer).threadActivations;
+  if (pending.get(key) === activation) pending.delete(key);
 }
 
 function subscribeThreadEvents(
@@ -209,7 +258,7 @@ function subscribeThreadEvents(
       return;
     }
     if (event.id <= sentThroughId) return;
-    // Gateway event ids are monotonic within a user's in-memory event store. A high-water cursor
+    // Gateway event ids are monotonic across the shared remote event stores. A high-water cursor
     // provides the same replay/live de-duplication as an ever-growing Set without retaining one
     // allocation for every token emitted during a long-running turn.
     sentThroughId = event.id;

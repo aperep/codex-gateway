@@ -118,12 +118,14 @@ export function createThreadOpenActions() {
         existing?.history !== undefined &&
         (existing.error === null || existing.error === undefined || existing.error === "")
       ) {
-        useGatewayRealtimeStore().connectThreadEvents(
-          hostId,
-          threadId,
-          existing.lastEventId,
-          existing.eventEpoch,
-        );
+        if (existing.readOnly !== true) {
+          useGatewayRealtimeStore().connectThreadEvents(
+            hostId,
+            threadId,
+            existing.lastEventId,
+            existing.eventEpoch,
+          );
+        }
         return existing;
       }
       const loadToken = beginPreviewLoad(key);
@@ -163,13 +165,8 @@ export function createThreadOpenActions() {
             eventEpoch: result.eventEpoch,
             loading: false,
             error: null,
+            readOnly: result.readOnly === true,
           });
-          useGatewayRealtimeStore().rememberThreadSubscription(
-            hostId,
-            threadId,
-            result.lastEventId,
-            result.eventEpoch,
-          );
           return views.threadViews[key];
         },
         fail: (error) => {
@@ -200,7 +197,11 @@ export function createThreadOpenActions() {
       await coordinateThreadSnapshot({
         input: { hostId, threadId },
         setLoading:
-          options.showLoading === true ? (loading) => (views.loading = loading) : undefined,
+          options.showLoading === true
+            ? (loading) => {
+                if (isCurrentViewTransition(viewEpoch)) views.loading = loading;
+              }
+            : undefined,
         accept: (result) =>
           views.viewEpoch !== viewEpoch ||
           navigation.selectedHostId !== hostId ||
@@ -211,14 +212,45 @@ export function createThreadOpenActions() {
         commit: (result) => {
           applyThreadSnapshotResult(threadId, result);
           cacheSelectedThreadView();
-          useGatewayRealtimeStore().rememberThreadSubscription(
-            hostId,
-            threadId,
-            result.lastEventId,
-            result.eventEpoch,
-          );
           void refreshGoalAfterOpen(hostId, threadId);
           if (options.scrollToLatest === true) requestScrollToLatest();
+        },
+        fail: (error) =>
+          gateway.setError(
+            messageFromError(error, gateway.t("app.openThreadFailed"), gateway.errorLabels),
+            { hostId, threadId },
+          ),
+      });
+    },
+
+    async retryThreadWriter() {
+      const gateway = useGatewayBootstrapStore();
+      const navigation = useGatewayNavigationStore();
+      const views = useGatewayThreadViewStore();
+      const hostId = navigation.selectedHostId;
+      const threadId = navigation.selectedThreadId;
+      if (hostId === null || threadId === null || !views.readOnly) return;
+      const viewEpoch = views.viewEpoch;
+      await coordinateThreadSnapshot({
+        input: { hostId, threadId, retryWriter: true },
+        accept: () =>
+          views.viewEpoch !== viewEpoch ||
+          navigation.selectedHostId !== hostId ||
+          navigation.selectedThreadId !== threadId
+            ? false
+            : true,
+        commit: (result) => {
+          applyThreadSnapshotResult(threadId, result, true);
+          cacheSelectedThreadView();
+          if (result.readOnly !== true) {
+            useGatewayRealtimeStore().connectThreadEvents(
+              hostId,
+              threadId,
+              result.lastEventId,
+              result.eventEpoch,
+            );
+            void refreshGoalAfterOpen(hostId, threadId);
+          }
         },
         fail: (error) =>
           gateway.setError(
@@ -345,14 +377,9 @@ async function recoverThreadSnapshot(hostId: number, threadId: string) {
           eventEpoch: result.eventEpoch,
           loading: false,
           error: null,
+          readOnly: result.readOnly === true,
         });
       }
-      useGatewayRealtimeStore().rememberThreadSubscription(
-        hostId,
-        threadId,
-        result.lastEventId,
-        result.eventEpoch,
-      );
     },
     fail: (error) =>
       gateway.setError(
@@ -382,7 +409,21 @@ async function syncOpenThreadFromServer(input: {
   gateway.clearError();
   await coordinateThreadSnapshot({
     input,
-    setLoading: input.showLoading ? (loading) => (views.loading = loading) : undefined,
+    setLoading: input.showLoading
+      ? (loading) => {
+          if (isCurrentViewTransition(input.viewEpoch)) views.loading = loading;
+        }
+      : undefined,
+    discard: () => {
+      const navigation = useGatewayNavigationStore();
+      const selected =
+        navigation.selectedHostId === input.hostId &&
+        navigation.selectedThreadId === input.threadId;
+      const retainedHistory = views.threadViews[pinnedKey(input.hostId, input.threadId)]?.history;
+      if (!selected && retainedHistory == null) {
+        useGatewayRealtimeStore().cancelThreadEvents(input.hostId, input.threadId);
+      }
+    },
     accept: (result) =>
       !isCurrentViewTransition(input.viewEpoch) ||
       (result.eventEpoch === views.eventEpoch && result.lastEventId < views.lastEventId)
@@ -408,7 +449,7 @@ function finishThreadSelection(threadId: string, replaceRoute?: boolean) {
   const views = useGatewayThreadViewStore();
   rememberOpenThread(threadId);
   syncSelectedRoute({ replace: replaceRoute });
-  if (navigation.selectedHostId !== null) {
+  if (navigation.selectedHostId !== null && !views.readOnly) {
     useGatewayRealtimeStore().connectThreadEvents(
       navigation.selectedHostId,
       threadId,
@@ -423,9 +464,11 @@ async function refreshGoalAfterOpen(hostId: number, threadId: string) {
   const gateway = useGatewayBootstrapStore();
   const composer = useGatewayComposerStore();
   const navigation = useGatewayNavigationStore();
+  const views = useGatewayThreadViewStore();
   try {
     const key = pinnedKey(hostId, threadId);
     if (
+      !views.readOnly &&
       !(key in composer.threadGoalObservedAtByKey) &&
       navigation.selectedHostId === hostId &&
       navigation.selectedThreadId === threadId

@@ -332,7 +332,10 @@ export function mapCodexNotification(notification: CodexNotification): MapperRes
 
   // ── Goals ─────────────────────────────────────────────────────
   if (method === "thread/goal/updated") {
-    return { event: { type: "thread.goal.updated", goal: p.goal }, emittedAt: emittedAtMs };
+    return {
+      event: { type: "thread.goal.updated", goal: p.goal, turnId: stringFromUnknown(p.turnId) },
+      emittedAt: emittedAtMs,
+    };
   }
 
   if (method === "thread/goal/cleared") {
@@ -520,8 +523,10 @@ function buildLifecycleItem(
     ...item,
     turnId: idParam(params.turnId),
     status: item.status ?? (phase === "started" ? "inProgress" : "completed"),
-    ...(phase === "started" ? { startedAt: lifecycleTimestamp } : {}),
-    ...(phase === "completed" ? { completedAt: lifecycleTimestamp } : {}),
+    // Keep the official item field names: paginated history now carries the same timestamps.
+    // Renaming only live events would make elapsed time disappear after reload or detail reads.
+    ...(phase === "started" ? { startedAtMs: lifecycleTimestamp } : {}),
+    ...(phase === "completed" ? { completedAtMs: lifecycleTimestamp } : {}),
   };
 }
 

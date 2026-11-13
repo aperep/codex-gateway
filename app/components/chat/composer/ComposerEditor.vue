@@ -358,6 +358,9 @@ function dismissMenu() {
 .composer-editor .cm-focused {
   outline: none;
 }
+.composer-editor .cm-cursor {
+  border-left-color: var(--ink);
+}
 .composer-editor .cm-gutters {
   display: none;
 }

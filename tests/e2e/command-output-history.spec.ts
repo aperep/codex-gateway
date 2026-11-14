@@ -13,10 +13,13 @@ test("browses earlier persisted command output", async ({ page, remoteWorkspace 
   await page
     .getByPlaceholder("输入后续修改要求")
     .fill(
-      "请执行这一条命令一次：awk 'BEGIN { for (i=1; i<=6000; i++) printf \"output-%05d abcdefghijklmnopqrstuvwxyz\\n\", i }'。不需要完整阅读输出，执行后只回复“输出完成”。",
+      "请原样执行这一条命令一次，不得修改命令、添加重定向或管道，也不要丢弃输出：awk 'BEGIN { for (i=1; i<=6000; i++) printf \"output-%05d abcdefghijklmnopqrstuvwxyz\\n\", i }'。执行后只回复“输出完成”。",
     );
   await page.getByTestId("send-turn-button").click();
-  const command = page.getByRole("button", { name: /awk.*6000/ }).first();
+  const command = page
+    .getByTestId("chat-scroll-area")
+    .getByRole("button", { name: /awk.*6000/ })
+    .first();
   await expect(command).toBeVisible({ timeout: AGENT_OUTPUT_TIMEOUT_MS });
   await expect(page.getByTestId("send-turn-button")).toHaveAttribute("aria-label", "已完成", {
     timeout: AGENT_OUTPUT_TIMEOUT_MS,

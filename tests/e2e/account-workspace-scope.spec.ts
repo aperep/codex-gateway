@@ -20,17 +20,23 @@ test("accounts retain only their assigned folder and conversations on a shared H
   remoteWorkspace,
 }) => {
   const runtimeUpdates = new Map<Page, Array<{ threadId: string; status: string }>>();
+  const realtimeErrors = new Map<Page, string[]>();
   const captureRuntime = (target: Page) => {
     const updates: Array<{ threadId: string; status: string }> = [];
+    const errors: string[] = [];
     runtimeUpdates.set(target, updates);
+    realtimeErrors.set(target, errors);
     target.on("websocket", (socket) =>
       socket.on("framereceived", ({ payload }) => {
+        const data: unknown = JSON.parse(payload.toString());
+        const error = z.object({ type: z.literal("error"), message: z.string() }).safeParse(data);
+        if (error.success) errors.push(error.data.message);
         const message = z
           .object({
             type: z.literal("thread.runtime.updated"),
             update: z.object({ threadId: z.string(), status: z.string() }),
           })
-          .safeParse(JSON.parse(payload.toString()));
+          .safeParse(data);
         if (message.success) updates.push(message.data.update);
       }),
     );
@@ -158,6 +164,18 @@ test("accounts retain only their assigned folder and conversations on a shared H
         threadId: cwd === alice ? bobThread : aliceThread,
       });
       expect(forbidden.type).toBe("error");
+      const errors = realtimeErrors.get(target)!;
+      const beforeSubscription = errors.length;
+      await target.evaluate(
+        ({ hostId, threadId }) => {
+          const realtime = window.__codexGatewayE2e?.realtime;
+          if (!realtime) throw new Error("Gateway E2E driver is unavailable");
+          realtime.send({ type: "thread.subscribe", hostId, threadId, afterId: 0 });
+        },
+        { hostId: host.id, threadId: cwd === alice ? bobThread : aliceThread },
+      );
+      await expect.poll(() => errors.length).toBeGreaterThan(beforeSubscription);
+      expect(errors.at(-1)).toContain("Path is outside this account's workspace");
       const forbiddenStart = await sendRealtimeRawRequest(target, {
         type: "thread.start",
         requestId: randomUUID(),

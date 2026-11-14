@@ -19,9 +19,12 @@ export interface ThreadOpenSnapshot {
   /** Materialized once at the app-server/event boundary; cache hits return this object directly. */
   history: ThreadTimelineHistoryState;
   oldestTimelineCursor: string | null;
+  /** Retention changed the page boundary; obtain a new official cursor before serving a cache hit. */
+  historyTrimmed?: boolean;
   /** Null when a metadata-only thread/read cannot expose persisted model settings. */
   threadSettings: ThreadSettingsState | null;
   tokenUsage: ThreadTokenUsageState | null;
+  readOnly?: boolean;
 }
 
 export interface TurnStartInput {
@@ -75,5 +78,5 @@ export interface ThreadControllerLike {
   readonly host: HostRecord;
   readonly threadId: string;
   handleNotification(message: RpcEnvelope): void;
-  handleStderr(text: string): void;
+  handleStderr(text: string, deliveryToken?: object): void;
 }

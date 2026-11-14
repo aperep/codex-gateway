@@ -2,6 +2,7 @@ import { z } from "zod";
 import { INITIAL_TIMELINE_PAGE_LIMIT } from "~~/shared/config";
 import { agentProviderIdSchema } from "~~/shared/agent/providers";
 import { reasoningSummarySchema } from "~~/shared/reasoning-summary";
+import { sandboxModeSchema, sandboxPolicySchema } from "~~/shared/permissions";
 import { uploadedFileSchema } from "~~/shared/runtime/uploaded-file";
 
 export const threadListSchema = z.object({
@@ -17,6 +18,7 @@ export const threadOpenSchema = z.object({
   hostId: z.coerce.number().int().positive(),
   threadId: z.string().trim().min(1),
   limit: z.coerce.number().int().min(1).max(100).default(INITIAL_TIMELINE_PAGE_LIMIT),
+  retryWriter: z.boolean().optional(),
 });
 
 export const threadMetadataListSchema = z.object({
@@ -75,12 +77,14 @@ export const threadStartSchema = z.object({
   cwd: z.string().trim().nullable().optional(),
   provider: agentProviderIdSchema.optional(),
   ...threadSettingFields,
+  sandbox: sandboxModeSchema.optional(),
 });
 
 export const threadSettingsUpdateSchema = z.object({
   hostId: z.coerce.number().int().positive(),
   threadId: z.string().trim().min(1),
   ...threadSettingFields,
+  sandboxPolicy: sandboxPolicySchema.nullable().optional(),
   collaborationMode: collaborationModeSchema,
 });
 

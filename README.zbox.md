@@ -1,19 +1,16 @@
 # Zbox variant
 
 `zbox` is the deployment branch of this fork; `main` follows the original project.
-The current upstream base is `00d10f23f43f385c765f180a8bdc03c91381ff60`
-and targets Codex 0.163.0.
+The current upstream base is `8e30d11966526aae4d7d54413cf30f4447e849a0`
+and targets Codex 0.166.0.
 
 The remaining source differences are:
 
 - Default the UI to English.
-- Open PDFs fit-to-width with zoom controls.
-  See [upstream PR #156](https://github.com/yunhaoli24/codex-gateway/pull/156).
-- Upload files from the Files view using its picker or folder drop targets;
-  refuse existing names and enforce the project boundary, including symlinks.
-  See [upstream PR #157](https://github.com/yunhaoli24/codex-gateway/pull/157).
+- Show the composer only for a selected writable thread.
 - Collect host metrics only while browsers subscribe, retaining the bounded history.
-  See [upstream draft PR #153](https://github.com/yunhaoli24/codex-gateway/pull/153).
+  Upstream resumes continuous sampling for connected hosts; the lab keeps polling
+  paused when no monitor is open.
 - Retain per-account workspace folders through the optional config v2
   `workspaceRoots` list (`hostId`, `name`, `remotePath`). Legacy stored project
   assignments migrate to this list, including folders without conversations.

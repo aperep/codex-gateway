@@ -17,6 +17,7 @@ import { EventEmitter } from "@posva/event-emitter";
 import { SshBackgroundTaskScheduler } from "./ssh-background-tasks";
 import { hostMfaManager } from "../../host-mfa/host-mfa-instance";
 import { HOST_MFA_TIMEOUT_MS } from "../../host-mfa/host-mfa-manager";
+import { verifySshHostKey } from "./ssh-host-trust";
 
 const SSH_READY_TIMEOUT_MS = 30_000;
 const SSH_KEEPALIVE_INTERVAL_MS = 30_000;
@@ -44,13 +45,16 @@ function outputLimitError(maxOutputBytes: number | undefined) {
 
 type SshConnectionPoolEvents = {
   ready: { userId: number; host: HostWithSecret };
+  closed: { connectionKey: string };
 };
 
 export class SshConnectionPool extends EventEmitter<SshConnectionPoolEvents> {
   private clients = new Map<string, Promise<Client>>();
   private clientTokens = new Map<string, symbol>();
+  private serverFingerprints = new Map<string, string>();
   private sftpChannels = new SftpChannelPool();
   private hostKeysByUser = new Map<string, Map<number, string>>();
+  private transportLeases = new Map<string, number>();
   private backgroundTasks = new SshBackgroundTaskScheduler();
 
   constructor() {
@@ -86,22 +90,26 @@ export class SshConnectionPool extends EventEmitter<SshConnectionPoolEvents> {
     return this.notifyReady(promise, host);
   }
 
-  async execChannelIfConnected(host: HostWithSecret, command: string) {
-    const key = this.connectionKeyFor(host);
-    const connection = this.clients.get(key);
+  async execIfConnected(host: HostWithSecret, command: string, options: ExecOptions = {}) {
+    const connection = this.clients.get(this.connectionKeyFor(host));
     if (connection === undefined) return null;
-    const client = await connection;
-    return await new Promise<ClientChannel>((resolve, reject) => {
-      client.exec(command, (error, channel) => (error ? reject(error) : resolve(channel)));
-    });
+    return await this.executeCommand(async () => {
+      const client = await connection;
+      return await new Promise<ClientChannel>((resolve, reject) => {
+        client.exec(command, (error, channel) => (error ? reject(error) : resolve(channel)));
+      });
+    }, options);
   }
 
-  runBackground<Result>(host: HostWithSecret, task: () => Promise<Result>) {
+  runBackground<Result>(
+    host: HostWithSecret,
+    task: () => Promise<Result>,
+    options: { signal?: AbortSignal } = {},
+  ) {
     const connectionKey = this.connectionKeyFor(host);
-    // The Client pool itself is keyed by the resolved remote identity and credentials. Use that
-    // same key here: two Gateway users with identical credentials share one physical SSH transport,
-    // so their best-effort collectors must share its background bulkhead as well.
-    return this.backgroundTasks.run(connectionKey, task);
+    // Reuse the authenticated transport key so aliases sharing that transport also share its
+    // background bulkhead. RPC fan-out across users does not merge their SSH/MFA authentication.
+    return this.backgroundTasks.run(connectionKey, task, options);
   }
 
   connectionKeyFor(host: HostWithSecret) {
@@ -112,18 +120,49 @@ export class SshConnectionPool extends EventEmitter<SshConnectionPoolEvents> {
     return `${key}:gateway-user:${currentGatewayUserId() ?? "anonymous"}`;
   }
 
+  connectionTokenFor(host: HostWithSecret) {
+    return this.clientTokens.get(this.connectionKeyFor(host));
+  }
+
+  serverFingerprintFor(host: HostWithSecret) {
+    const fingerprint = this.serverFingerprints.get(this.connectionKeyFor(host));
+    if (fingerprint === undefined) throw new Error("SSH server identity has not been verified");
+    return fingerprint;
+  }
+
+  /** Shared RPC may outlive the Host alias that authenticated its underlying SSH transport.
+   * Hold that transport until the last RPC consumer leaves; forced transport repair still closes
+   * it normally. Capture the key now because releasing can run in a different user's scope. */
+  retainTransport(host: HostWithSecret) {
+    const key = this.connectionKeyFor(host);
+    this.transportLeases.set(key, (this.transportLeases.get(key) ?? 0) + 1);
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      const remaining = (this.transportLeases.get(key) ?? 1) - 1;
+      if (remaining > 0) this.transportLeases.set(key, remaining);
+      else this.transportLeases.delete(key);
+      if (!this.isReferenced(key)) this.disconnectKey(key);
+    };
+  }
+
   async exec(
     host: HostWithSecret,
     command: string,
     options: ExecOptions = {},
   ): Promise<CommandResult> {
+    return await this.executeCommand(() => this.execChannel(host, command), options);
+  }
+
+  // Both foreground commands and best-effort sampling need one deadline covering admission and
+  // output. Settling is local; an unresponsive server need not acknowledge channel.close().
+  private async executeCommand(
+    open: () => Promise<ClientChannel>,
+    options: ExecOptions,
+  ): Promise<CommandResult> {
     const startedAt = Date.now();
-    const channel = await this.openExecChannelWithin(
-      host,
-      command,
-      options.timeoutMs,
-      options.signal,
-    );
+    const channel = await this.openExecChannelWithin(open, options.timeoutMs, options.signal);
     const remainingMs =
       options.timeoutMs === undefined
         ? undefined
@@ -162,6 +201,7 @@ export class SshConnectionPool extends EventEmitter<SshConnectionPoolEvents> {
         return;
       }
       channel.on("data", (chunk: Buffer) => {
+        if (settled) return;
         outputBytes += chunk.length;
         if (outputLimitExceeded(outputBytes, options.maxOutputBytes)) {
           finish(() => reject(outputLimitError(options.maxOutputBytes)));
@@ -171,6 +211,7 @@ export class SshConnectionPool extends EventEmitter<SshConnectionPoolEvents> {
         stdout += stdoutDecoder.write(chunk);
       });
       channel.stderr.on("data", (chunk: Buffer) => {
+        if (settled) return;
         outputBytes += chunk.length;
         if (outputLimitExceeded(outputBytes, options.maxOutputBytes)) {
           finish(() => reject(outputLimitError(options.maxOutputBytes)));
@@ -191,13 +232,11 @@ export class SshConnectionPool extends EventEmitter<SshConnectionPoolEvents> {
   }
 
   private async openExecChannelWithin(
-    host: HostWithSecret,
-    command: string,
+    open: () => Promise<ClientChannel>,
     timeoutMs: number | undefined,
     signal: AbortSignal | undefined,
   ) {
-    if (timeoutMs === undefined && signal === undefined)
-      return await this.execChannel(host, command);
+    if (timeoutMs === undefined && signal === undefined) return await open();
     return await new Promise<ClientChannel>((resolve, reject) => {
       let settled = false;
       const cleanup = () => {
@@ -222,7 +261,7 @@ export class SshConnectionPool extends EventEmitter<SshConnectionPoolEvents> {
         abort();
         return;
       }
-      void this.execChannel(host, command).then(
+      void open().then(
         (channel) => {
           if (settled) {
             // A timed-out channel request can still be admitted later by ssh2. Close that late
@@ -389,6 +428,8 @@ export class SshConnectionPool extends EventEmitter<SshConnectionPoolEvents> {
     const client = this.clients.get(key);
     this.clients.delete(key);
     this.clientTokens.delete(key);
+    this.serverFingerprints.delete(key);
+    if (client !== undefined) this.emit("closed", { connectionKey: key });
     void client?.then((connection) => connection.end()).catch(() => {});
   }
 
@@ -407,6 +448,7 @@ export class SshConnectionPool extends EventEmitter<SshConnectionPoolEvents> {
   }
 
   private isReferenced(key: string) {
+    if (this.transportLeases.has(key)) return true;
     for (const hostKeys of this.hostKeysByUser.values()) {
       for (const referencedKey of hostKeys.values()) {
         if (referencedKey === key) {
@@ -511,6 +553,16 @@ export class SshConnectionPool extends EventEmitter<SshConnectionPoolEvents> {
             });
         })
         .connect({
+          hostVerifier: (serverKey: Buffer) => {
+            try {
+              assertCurrentConnection();
+              this.serverFingerprints.set(key, verifySshHostKey(host, serverKey));
+              return true;
+            } catch (error: unknown) {
+              fail(error instanceof Error ? error : new Error("SSH host key verification failed"));
+              return false;
+            }
+          },
           host: sock ? undefined : resolved.hostName,
           sock,
           username: host.username ?? resolved.username,
@@ -546,7 +598,9 @@ export class SshConnectionPool extends EventEmitter<SshConnectionPoolEvents> {
   private deleteClientIfCurrent(key: string, token: symbol) {
     if (this.clientTokens.get(key) !== token) return;
     this.clientTokens.delete(key);
+    this.serverFingerprints.delete(key);
     this.clients.delete(key);
     this.sftpChannels.close(key);
+    this.emit("closed", { connectionKey: key });
   }
 }

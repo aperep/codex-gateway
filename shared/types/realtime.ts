@@ -85,6 +85,7 @@ export type RealtimeClientMessage =
       hostId: number;
       threadId: string;
       limit?: number;
+      retryWriter?: boolean;
     }
   | {
       type: "thread.subscribe";
@@ -156,6 +157,7 @@ export type RealtimeClientMessage =
       effort?: ReasoningEffort | null;
       summary?: ReasoningSummary | null;
       approvalPolicy?: ApprovalPolicy | null;
+      sandbox?: import("../permissions").SandboxMode;
     }
   | {
       type: "turn.start";

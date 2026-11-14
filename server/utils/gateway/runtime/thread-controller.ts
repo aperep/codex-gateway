@@ -49,7 +49,9 @@ export class ThreadController {
       );
       this.client.on(
         "stderr",
-        bindGatewayUser((text: string) => this.handleStderr(text)),
+        bindGatewayUser((text: string, deliveryToken?: object) =>
+          this.handleStderr(text, deliveryToken),
+        ),
       );
       this.client.on(
         "close",
@@ -64,6 +66,7 @@ export class ThreadController {
       this.threadId,
       {
         method,
+        deliveryToken: payload,
         params: payload.params,
         id: payload.id ?? undefined,
       },
@@ -94,6 +97,7 @@ export class ThreadController {
       this.threadId,
       {
         method,
+        deliveryToken: message,
         params: message.params,
         id: message.id ?? undefined,
         emittedAtMs: "emittedAtMs" in message ? message.emittedAtMs : undefined,
@@ -104,8 +108,8 @@ export class ThreadController {
     if (method === "turn/started") this.onMaterialized?.();
   }
 
-  handleStderr(text: string) {
-    threadRuntimeEvents.record(this.host.id, this.threadId, { type: "gateway.stderr", text });
+  handleStderr(text: string, deliveryToken?: object) {
+    threadRuntimeEvents.recordStderr(this.host.id, this.threadId, text, deliveryToken);
   }
 
   handleClose() {
@@ -172,9 +176,21 @@ export class ThreadController {
   }
 
   enqueue<T>(operation: () => Promise<T>) {
-    const run = this.operationQueue.then(operation, operation);
+    const execute = () => {
+      if (this.closed) throw new Error("Thread controller is closed");
+      return operation();
+    };
+    const run = this.operationQueue.then(execute, execute);
     this.operationQueue = run.catch(() => {});
     return run;
+  }
+
+  async whenIdle() {
+    let pending: Promise<unknown>;
+    do {
+      pending = this.operationQueue;
+      await pending;
+    } while (pending !== this.operationQueue);
   }
 
   close() {

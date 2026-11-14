@@ -47,6 +47,15 @@ test("new threads display and inherit the remote Codex defaults", async ({
   });
   await page.getByTestId(`project-button-${project.remotePath}`).click();
 
+  await expect(page.getByTestId("project-thread-list")).toBeVisible();
+  await expect(page.getByPlaceholder("输入后续修改要求")).toBeHidden();
+  const offset = await realtimeClientMessageCount(page);
+  await page
+    .getByTestId("project-thread-list")
+    .getByRole("button", { name: "新建", exact: true })
+    .click();
+  await expect(page.getByPlaceholder("输入后续修改要求")).toBeVisible();
+
   const picker = page.getByTestId("model-select");
   await expect(picker).not.toContainText(/主机默认|Codex 默认/);
   await expect(picker).toContainText(effortDisplayLabel(configured.effort));
@@ -60,9 +69,6 @@ test("new threads display and inherit the remote Codex defaults", async ({
   );
   await page.getByTestId("model-selector-close").click();
 
-  const offset = await realtimeClientMessageCount(page);
-  await page.getByPlaceholder("输入后续修改要求").fill("/");
-  await page.getByTestId("slash-command-new").click();
   const threadStart = z
     .object({
       hostId: z.number(),
@@ -75,6 +81,74 @@ test("new threads display and inherit the remote Codex defaults", async ({
   expect(threadStart).toMatchObject({ cwd: project.remotePath });
   expect(threadStart.model).toBeUndefined();
   expect(threadStart.effort).toBeUndefined();
+});
+
+test("permission presets persist approval and sandbox together across reloads", async ({
+  page,
+  remoteWorkspace,
+}) => {
+  await openApp(page, { interceptRealtime: false });
+  const { project } = await remoteWorkspace.provision();
+  await page.getByTestId(`project-button-${project.remotePath}`).click();
+  await page
+    .getByTestId("project-thread-list")
+    .getByRole("button", { name: "新建", exact: true })
+    .click();
+  const picker = page.getByTestId("approval-policy-trigger");
+  const menu = page.locator('[data-slot="popover-content"]');
+
+  await picker.click();
+  await menu.getByRole("button", { name: /^完全访问/ }).click();
+  await page.keyboard.press("Escape");
+  await page.getByPlaceholder("输入后续修改要求").fill("/");
+  await page.getByTestId("slash-command-new").click();
+  await waitForSelectedThreadId(page);
+  await reloadApp(page);
+  await expect(picker).toHaveAttribute("title", "完全访问");
+  await expect
+    .poll(() => page.evaluate(() => window.__codexGatewayE2e?.composer.selectedThreadSettings))
+    .toMatchObject({ approvalPolicy: "never", sandboxPolicy: { type: "dangerFullAccess" } });
+
+  for (const preset of [
+    { label: "请求审批", policy: "untrusted" },
+    { label: "帮我审批", policy: "on-request" },
+    { label: "完全访问", policy: "never" },
+  ]) {
+    await picker.click();
+    const saved = page.waitForResponse(
+      (response) =>
+        response.url().endsWith("/api/threads/settings") && response.request().method() === "POST",
+    );
+    await menu.getByRole("button", { name: new RegExp(`^${preset.label}`) }).click();
+    expect((await saved).ok()).toBe(true);
+    await page.keyboard.press("Escape");
+    await reloadApp(page);
+    await expect(picker).toHaveAttribute("title", preset.label);
+    await expect
+      .poll(() => page.evaluate(() => window.__codexGatewayE2e?.composer.selectedThreadSettings))
+      .toMatchObject({
+        approvalPolicy: preset.policy,
+        sandboxPolicy:
+          preset.policy === "never"
+            ? { type: "dangerFullAccess" }
+            : {
+                type: "workspaceWrite",
+                writableRoots: [],
+                networkAccess: false,
+                excludeTmpdirEnvVar: false,
+                excludeSlashTmp: false,
+              },
+      });
+  }
+
+  await picker.click();
+  await menu.getByRole("button", { name: /^自定义/ }).click();
+  await page.keyboard.press("Escape");
+  await reloadApp(page);
+  await expect(picker).toHaveAttribute("title", "完全访问");
+  await expect
+    .poll(() => page.evaluate(() => window.__codexGatewayE2e?.composer.selectedThreadSettings))
+    .toMatchObject({ approvalPolicy: "never", sandboxPolicy: { type: "dangerFullAccess" } });
 });
 
 test("references real project files as structured turn context", async ({
@@ -145,7 +219,7 @@ test("references real project files as structured turn context", async ({
   await expect(label).toHaveCSS("white-space", "nowrap");
   expect(await label.evaluate((element) => element.scrollWidth > element.clientWidth)).toBe(true);
   await nestedOption.click();
-  const chip = page.locator(".cm-file-reference", { hasText: `@${fileName}` });
+  const chip = page.locator(".composer-file-reference", { hasText: `@${fileName}` });
   await expect(chip).toBeVisible();
   await expect(chip).toHaveText(`@${fileName}`);
   await expect(chip).not.toContainText(directory);
@@ -307,12 +381,18 @@ test("connects to a real SSH Codex host and lists a project thread created by ap
     .click();
   await expect(page.getByRole("tab", { name: project.name })).toBeHidden();
 
+  await expect(page.getByPlaceholder("输入后续修改要求")).toBeHidden();
+  await page
+    .getByTestId("project-thread-list")
+    .getByRole("button", { name: "新建", exact: true })
+    .click();
+  const initialThreadId = await waitForSelectedThreadId(page);
   await page.getByPlaceholder("输入后续修改要求").fill("/");
   await expect(page.getByTestId("slash-command-menu")).toBeVisible();
   await expect(page.getByTestId("slash-command-new")).toBeVisible();
-  await expect(page.getByTestId("slash-command-plan")).toBeHidden();
+  await expect(page.getByTestId("slash-command-plan")).toBeVisible();
   await page.getByTestId("slash-command-new").click();
-  const slashNewThreadId = await waitForSelectedThreadId(page);
+  const slashNewThreadId = await waitForSelectedThreadId(page, initialThreadId);
   await expect(page.getByTestId(`thread-button-${slashNewThreadId}`)).toBeVisible({
     timeout: 30_000,
   });

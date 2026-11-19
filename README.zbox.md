@@ -7,6 +7,7 @@ and targets Codex 0.166.0.
 The remaining source differences are:
 
 - Default the UI to English.
+- Accept uploads up to 100 MiB per file, retaining the eight-file batch limit.
 - Show the composer only for a selected writable thread.
 - Collect host metrics only while browsers subscribe, retaining the bounded history.
   Upstream resumes continuous sampling for connected hosts; the lab keeps polling

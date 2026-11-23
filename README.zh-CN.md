@@ -119,7 +119,7 @@ flowchart LR
     G --> N[Web Push 优先，Bark 后备]
 ```
 
-项目使用 Nuxt 4.6、Vue 3 和 TypeScript，浏览器状态由 Pinia 管理，工作区使用 Dockview，对话使用 TanStack Virtual，shadcn-vue / AI Elements 通过预编译工作区包复用。目前已实现的 provider 只有 Codex，协议映射集中在服务端 provider adapter。当前协议基准为 **Codex 0.166.0**，由 [codex-version.ts](server/utils/gateway/infra/codex/codex-version.ts) 定义，源码子模块对齐对应发布版本。
+项目使用 Nuxt 4.6、Vue 3 和 TypeScript，浏览器状态由 Pinia 管理，工作区使用 Dockview，对话使用 TanStack Virtual，shadcn-vue / AI Elements 通过预编译工作区包复用。目前已实现的 provider 只有 Codex，协议映射集中在服务端 provider adapter。当前协议基准为 **Codex 0.170.0**，由 [codex-version.ts](server/utils/gateway/infra/codex/codex-version.ts) 定义，源码子模块对齐对应发布版本。
 
 ### 连接与账号边界
 
@@ -144,6 +144,8 @@ SSH 池在同一 Gateway 用户与远端身份下，为不同功能和浏览器�
 冷启动通过 `thread/resume` 取得订阅和设置，包括 Plan 协作模式，通过 `thread/timeline/list` 读取历史。首次请求 **20 个时间线条目**，更多内容显式按游标分页，通常每页 100 条。展开中间过程可通过 `thread/items/read` 读取详情。热切换复用持续更新的服务端快照；事件更新快照后分发给订阅页面。重连和过期运行态校准会在需要时刷新 App Server 的权威状态。
 
 空闲对话发送输入使用 `turn/start`，运行中的 Turn 使用 `turn/steer`，明确停止使用 `turn/interrupt`。包括 steer 在内的用户消息始终属于对话正文，中间过程折叠属于展示行为。页面重新可见或 WebSocket 重连时会刷新其他客户端修改过的对话设置。
+
+通过 `/provider` 管理当前主机的远端模型供应商、授权受支持的网关，并选择新对话默认使用的供应商。已有对话继续使用保存的供应商及对应模型目录。消息操作可从用户消息所在 Turn 之前分叉（将文字和图片放入新草稿），或保留到已结束的助手 Turn 后分叉，原对话保持不变。
 
 单层虚拟列表限制挂载行数。浏览器另保留最近 10 个对话缓存，释放最近三个 Turn 以外、已完成且已折叠的中间内容，并把命令输出限制为 128 Ki 字符窗口；需要时可以重新获取旧内容。服务端快照和按对话保存的事件重放在闲置 10 分钟后自动过期，读取和更新会续期；历史分页使用带过期回收的全局 LRU，渲染任务随所属组件清理。这些措施减少内存保留，但不是超长活动 Turn 的固定字节上限。默认值见 [shared/config.ts](shared/config.ts)。
 
@@ -316,6 +318,8 @@ docker compose logs --since 10m --tail 100 codex-gateway
 
 - Docker 构建 production Nuxt 应用，应用和浏览器分别在独立容器中运行。
 - SSH 测试环境覆盖全新 standalone 安装、从 npm 迁移、daemon 升级和真实 keyboard-interactive MFA。
+- 每个 SSH fixture 将只读挂载的源码复制到独立、可写且归测试用户所有的项目目录。复制包含未提交的源码变更，排除依赖、运行产物和本地环境配置文件；容器重启保留项目副本，新一轮测试重新创建。不会修改宿主机源码目录的所有权。
+- 仅临时 SSH fixture 关闭 Docker 的 seccomp 和 AppArmor profile，使真实 Codex Linux sandbox 能创建 user/mount namespace。启动 SSH 前检查项目可写性和 user namespace；应用与浏览器容器保留默认 profile，不修改宿主机安全设置。
 - Gateway 通过 SSH 连接 target，并启动或恢复真实 Codex app-server。
 - Playwright 以浏览器行为验证登录、配置、thread 恢复、实时同步、移动端布局、diff 渲染、动态请求、通知、子代理 UI、远程文件、浏览器预览和真实 tmux 监控。
 

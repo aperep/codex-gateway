@@ -1,5 +1,10 @@
 import { z } from "zod";
+import { modelProviderResultSchema } from "../../model-providers/protocol";
+import { threadEnvironmentSchema } from "../../environments";
+import { appServerThreadSchema, threadItemsListResponseSchema } from "../app-server";
 import { hostUpgradeProgressSchema } from "../../host-upgrade";
+import { hostLifecycleMessageSchema } from "../../host-lifecycle-message";
+import { notificationTranslationSchema } from "../../notifications/messages";
 import type { RealtimeServerMessage } from "../../types";
 import { reasoningSummarySchema } from "../../reasoning-summary";
 import { sandboxPolicySchema } from "../../permissions";
@@ -106,6 +111,7 @@ const threadSettingsSchema = z
     model: nullableString,
     effort: nullableString,
     summary: reasoningSummarySchema.nullable().optional(),
+    environments: z.array(threadEnvironmentSchema).nullable().optional(),
     approvalPolicy: z.enum(["untrusted", "on-request", "never"]).nullable().optional(),
     sandboxPolicy: sandboxPolicySchema.nullable().optional(),
     collaborationMode: z
@@ -227,6 +233,7 @@ const notificationSchema = z
     key: nonEmptyString,
     title: z.string(),
     body: z.string(),
+    translation: notificationTranslationSchema.optional(),
     group: z.string().nullable().optional(),
     target: notificationTargetSchema,
   })
@@ -410,6 +417,37 @@ export const realtimeServerMessageSchema: z.ZodType<RealtimeServerMessage> = z.d
   [
     z
       .object({
+        type: z.literal("modelProvider.result"),
+        ...requestIdField,
+        hostId: positiveId,
+        result: modelProviderResultSchema,
+      })
+      .strict(),
+    z
+      .object({
+        type: z.literal("thread.section.changed"),
+        ...threadScopeFields,
+        sectionId: z.string().nullable(),
+      })
+      .strict(),
+    z
+      .object({
+        type: z.literal("thread.forked"),
+        ...requestIdField,
+        hostId: positiveId,
+        thread: appServerThreadSchema,
+      })
+      .strict(),
+    z
+      .object({
+        type: z.literal("thread.items.page"),
+        ...requestIdField,
+        ...threadScopeFields,
+        ...threadItemsListResponseSchema.shape,
+      })
+      .strict(),
+    z
+      .object({
         type: z.literal("notification.webPush.configured"),
         ...requestIdField,
         publicKey: nonEmptyString,
@@ -452,6 +490,7 @@ export const realtimeServerMessageSchema: z.ZodType<RealtimeServerMessage> = z.d
             message: z.string(),
             createdAt: z.string().optional(),
             upgradeProgress: hostUpgradeProgressSchema.nullable().optional(),
+            messageTranslation: hostLifecycleMessageSchema.optional(),
           })
           .strict(),
       })

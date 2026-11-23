@@ -41,15 +41,17 @@ const emit = defineEmits<{
   >
     {{ props.row.loading ? t("app.loadingOlder") : t("app.loadOlderItems") }}
   </Button>
-  <ThreadItemView
-    v-else-if="props.row.type === 'item'"
-    :item="props.row.item"
-    :host-id="hostId"
-    :thread-id="threadId"
-    :turn-timing="props.row.turnTiming"
-    :response-usage="props.row.responseUsage"
-    :agent-actions-available="props.row.agentActionsAvailable"
-  />
+  <div v-else-if="props.row.type === 'item'" class="group min-w-0">
+    <ThreadItemView
+      :item="props.row.item"
+      :host-id="hostId"
+      :thread-id="threadId"
+      :turn-timing="props.row.turnTiming"
+      :response-usage="props.row.responseUsage"
+      :agent-actions-available="props.row.agentActionsAvailable"
+      :turn-id="props.row.turnId"
+    />
+  </div>
   <div v-else class="flex items-center gap-3">
     <TurnDurationLabel :timing="props.row" />
     <TurnUsageAmountLabel :usage="props.row.responseUsage" />

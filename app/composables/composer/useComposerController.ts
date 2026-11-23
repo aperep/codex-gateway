@@ -1,4 +1,4 @@
-import { computed } from "vue";
+import { computed, ref } from "vue";
 import { storeToRefs } from "pinia";
 import { useAttachmentUpload } from "./useAttachmentUpload";
 import { useComposerDraft } from "./useComposerDraft";
@@ -7,6 +7,7 @@ import { useComposerSlashActions } from "./useComposerSlashActions";
 import { useComposerTurnSubmit } from "./useComposerTurnSubmit";
 import { useThreadSettingsControls } from "./useThreadSettingsControls";
 import { useGatewayCatalogStore } from "@/stores/gateway-catalog";
+import { useGatewayConfigStore } from "@/stores/gateway-config";
 import { useGatewayBootstrapStore } from "@/stores/gateway-bootstrap";
 import { useGatewayComposerStore } from "@/stores/gateway-composer";
 import { useGatewayNavigationStore } from "@/stores/gateway-navigation";
@@ -17,6 +18,9 @@ import { isThreadGoalOngoing } from "@/utils/thread-goal-display";
 import { useComposerSlashMenu } from "./useComposerSlashMenu";
 
 export function useComposerController() {
+  const modelProvidersOpen = ref(false);
+  const config = useGatewayConfigStore();
+  const canManageModelProviders = computed(() => config.gatewayConfig.workspaceRoots === undefined);
   const gateway = useGatewayCatalogStore();
   const bootstrap = useGatewayBootstrapStore();
   const composer = useGatewayComposerStore();
@@ -113,6 +117,9 @@ export function useComposerController() {
     return t("app.send");
   });
   const slashActions = useComposerSlashActions({
+    openModelProviders: () => {
+      if (canManageModelProviders.value) modelProvidersOpen.value = true;
+    },
     text: turnText,
     selectedThreadId,
     startNewThread: submit.startNewThread,
@@ -125,6 +132,7 @@ export function useComposerController() {
     selectedThreadId,
     selectedThreadGoal,
     enabled: composerInputEnabled,
+    canManageModelProviders,
     onSelect: slashActions.runSlashCommand,
   });
 
@@ -170,6 +178,7 @@ export function useComposerController() {
   }
 
   return {
+    modelProvidersOpen,
     activePlanSummary,
     attachedFiles,
     fileReferences,

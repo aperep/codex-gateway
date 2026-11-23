@@ -12,6 +12,7 @@ import type { AgentRpcClient, ProviderAdapter } from "../agent/provider-adapter"
 import { appServerThreadFromUnknown } from "~~/shared/runtime/app-server";
 import { threadMetadataStore } from "../state/thread-metadata";
 import { isWorkspacePath, workspaceRootsForHost } from "../state/workspace-scope";
+import { threadSectionEvents } from "./thread-section-events";
 
 export class HostRpcSession {
   readonly client: AgentRpcClient;
@@ -81,6 +82,18 @@ export class HostRpcSession {
       const thread = appServerThreadFromUnknown(recordFromUnknown(message.params)?.thread);
       const cwd = thread?.cwd ?? threadMetadataStore.get(this.host.id, threadId)?.cwd;
       if (!isWorkspacePath(this.host.id, cwd)) return;
+    }
+    if (message.method === "thread/section/changed") {
+      const params = recordFromUnknown(message.params);
+      if (
+        threadId !== null &&
+        (params?.sectionId === null || typeof params?.sectionId === "string")
+      ) {
+        // A reorder can retain the same sectionId. Always invalidate official ordering instead
+        // of attempting a local move from this notification's deliberately minimal payload.
+        threadSectionEvents.emit(this.host.id, threadId, params.sectionId);
+      }
+      return;
     }
     activeMainThreadMonitor.handleNotification(
       {

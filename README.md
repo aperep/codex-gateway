@@ -119,7 +119,7 @@ flowchart LR
     G --> N[Web Push, then Bark fallback]
 ```
 
-The stack is Nuxt 4.6 / Vue 3 / TypeScript, with Pinia for browser state, Dockview for workspace layout, TanStack Virtual for the transcript, and precompiled shadcn-vue / AI Elements workspace packages. Codex is the only implemented provider; protocol mapping lives behind the server's provider adapter. The current protocol baseline is **Codex 0.166.0**, defined in [codex-version.ts](server/utils/gateway/infra/codex/codex-version.ts) and mirrored by the source submodule.
+The stack is Nuxt 4.6 / Vue 3 / TypeScript, with Pinia for browser state, Dockview for workspace layout, TanStack Virtual for the transcript, and precompiled shadcn-vue / AI Elements workspace packages. Codex is the only implemented provider; protocol mapping lives behind the server's provider adapter. The current protocol baseline is **Codex 0.170.0**, defined in [codex-version.ts](server/utils/gateway/infra/codex/codex-version.ts) and mirrored by the source submodule.
 
 ### Connections and account boundaries
 
@@ -144,6 +144,8 @@ Directory navigation derives from remote thread working directories (`cwd`). Pin
 Cold thread activation uses `thread/resume` for subscription/settings, including Plan collaboration mode, plus `thread/timeline/list` for history. The initial page requests **20 timeline entries**, followed by explicit cursor pagination, normally 100 entries per page. Expanding intermediate content can read details with `thread/items/read`. Warm opens reuse the continuously updated server snapshot; events update that snapshot and fan out to subscribed pages. Reconnect and stale-running reconciliation refresh authoritative App Server state when needed.
 
 Input to an idle conversation uses `turn/start`; input to a running turn uses `turn/steer`. `turn/interrupt` is the explicit stop action. User messages, including steer input, remain transcript content; intermediate-process folding is a presentation concern. Returning to a page or reconnecting its WebSocket refreshes thread settings changed by another client.
+
+Use `/provider` to manage a Host's remote model providers, authorize supported gateways, and select the default for new conversations. Existing conversations keep their saved provider and corresponding model catalog. Message actions can fork before a user message's Turn (staging its text and images for editing) or after a completed assistant Turn, leaving the original conversation intact.
 
 One flat virtual timeline bounds mounted rows. Browser retention separately keeps 10 recent thread caches, releases older completed/collapsed intermediate content beyond the latest three turns, and limits command-output windows to 128 Ki characters. Older content can be fetched again. Server snapshots and per-thread event replay expire after 10 idle minutes; reads and updates renew their lifetime. Historical pages use a global LRU with expiry, and rendering tasks are cleaned up with their owners. These measures reduce retained memory but are not a fixed byte ceiling for a large active turn. Defaults live in [shared/config.ts](shared/config.ts).
 
@@ -316,6 +318,8 @@ E2E tests do not mock Codex app-server:
 
 - Docker builds the production Nuxt app and runs the app and browsers in separate containers.
 - SSH fixtures cover fresh standalone installation, migration from npm, daemon upgrades and real keyboard-interactive MFA.
+- Each SSH fixture copies the read-only checkout into its own writable project directory, owned by the fixture user. Uncommitted source changes are included; dependencies, runtime output and local environment files are excluded. Container restarts preserve that copy, while a new suite starts fresh. Host checkout ownership is never changed.
+- Only the disposable SSH fixtures disable Docker's seccomp and AppArmor profiles so the real Codex Linux sandbox can create user/mount namespaces. They check workspace writes and user namespaces before starting SSH. Application and browser containers retain their default profiles; no host security settings are changed.
 - Gateway connects to the target over SSH and starts or resumes a real Codex app-server.
 - Playwright verifies login, config, thread restore, realtime sync, mobile layout, diff rendering, dynamic requests, notifications, sub-agent UI, remote files, browser preview, and real tmux monitoring.
 

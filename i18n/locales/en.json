@@ -1,5 +1,108 @@
 {
   "app": {
+    "dismiss": "Dismiss",
+    "loading": "Loading",
+    "preview": "Preview",
+    "toggleSidebar": "Toggle sidebar",
+    "modelContextUsage": "Model context usage",
+    "toolCall": "Tool call",
+    "webSearch": "Web search",
+    "serverRequest": "Server request",
+    "readRemoteDirectoryFailed": "Failed to read remote directory",
+    "implementPlanMessage": "Implement the plan.",
+    "effortNone": "None",
+    "effortMinimal": "Minimal",
+    "effortLow": "Light",
+    "effortMedium": "Medium",
+    "effortHigh": "High",
+    "effortExtraHigh": "Extra high",
+    "itemStatus": {
+      "pending": "Pending",
+      "waitingForClient": "Waiting for client",
+      "waitingForApproval": "Waiting for approval",
+      "approved": "Approved",
+      "rejected": "Rejected",
+      "cancelled": "Cancelled",
+      "resolved": "Resolved",
+      "stopped": "Stopped",
+      "notFound": "Not found",
+      "starting": "Starting"
+    },
+    "hostLifecycle": {
+      "connecting": "Connecting to {host} in the background",
+      "checkingVersion": "Checking the remote Codex version on {host}",
+      "repairingInstallation": "The remote Codex installation on {host} is missing or damaged. Reinstalling {version}",
+      "repairingStartup": "The remote Codex app-server on {host} failed to start. Reinstalling {version}: {error}",
+      "installing": "Installing Codex {version} on {host} using the offline package",
+      "updatingDaemon": "Updating the Codex daemon on {host} to {version} using the official upgrade workflow",
+      "restartingDaemon": "Restarting the Codex daemon on {host}",
+      "mfaRequired": "Enter an MFA verification code to reconnect",
+      "mfaDisconnected": "SSH disconnected. Enter an MFA verification code to reconnect",
+      "upgradeFailed": "The Codex upgrade on {host} failed",
+      "upgradeComplete": "The Codex upgrade on {host} is complete. Reconnecting",
+      "upgrading": "Upgrading Codex on {host} to {version}",
+      "connected": "Connected to Codex app-server on {host}",
+      "connectedVersion": "Connected to Codex {version} on {host}",
+      "connectedUpgraded": "Upgraded Codex on {host} from {beforeVersion} to {version}. Connected to app-server"
+    },
+    "serverNotifications": {
+      "turnCompleted": {
+        "title": "{thread} · Turn ended",
+        "body": "The conversation on {host} is {status}. You can enter the next step."
+      },
+      "goalCompleted": {
+        "title": "{thread} · Goal ended",
+        "body": "The goal on {host} is {status}. Elapsed: {duration}; tokens used: {tokens}."
+      },
+      "inputRequested": {
+        "title": "{thread} · Waiting for an answer",
+        "body": "The Agent on {host} is waiting for your answer{questionCount}: {question}"
+      },
+      "tmuxCompleted": {
+        "title": "Tmux task ended · {host} · {session}",
+        "body": "Host: {host}\nThread: {thread}\nTmux: {session}\nStatus: {reason}"
+      },
+      "questionCount": " ({count} questions)",
+      "openQuestions": "Open the conversation to view the questions."
+    },
+    "forkMessage": "Fork conversation",
+    "forkFailed": "Unable to fork conversation",
+    "forkUnsupportedInput": "This message contains input the composer cannot restore; forking before it is unavailable",
+    "forkBeforeTurn": "Fork before this turn and edit the message",
+    "forkAfterTurn": "Fork through this completed turn",
+    "modelProviders": {
+      "requestFailed": "Unable to manage model providers",
+      "title": "Model providers",
+      "description": "Manage the selected SSH host's Codex model providers. Existing conversations keep their provider.",
+      "commandDescription": "View and configure remote model providers",
+      "add": "Add gateway",
+      "refresh": "Refresh",
+      "save": "Save configuration",
+      "edit": "Edit",
+      "select": "Use for new conversations",
+      "default": "Default",
+      "authorize": "Check authorization / sign in",
+      "cancelLogin": "Cancel this host's active gateway sign-in",
+      "externalAuth": "Authentication is managed externally and is preserved when saving.",
+      "restartHint": "New provider definitions may require restarting Codex daemon from host settings. Saving configuration does not sign in or select a default. For OAuth without device sign-in, authorize from a client on the remote host.",
+      "fields": {
+        "name": "Name",
+        "baseUrl": "API base URL",
+        "envKey": "API key environment variable name",
+        "profile": "AWS profile",
+        "region": "AWS region",
+        "projectId": "GCP project ID",
+        "location": "GCP location",
+        "credentialFile": "Remote credential file path"
+      },
+      "auth": {
+        "notReady": "Authorization required",
+        "started": "Waiting for authorization",
+        "succeeded": "Credentials are locally ready",
+        "failed": "Authorization failed",
+        "external": "This provider uses external credentials rather than gateway OAuth."
+      }
+    },
     "newChat": "New chat",
     "loginTitle": "Sign in to Codex Gateway",
     "loginDescription": "Use the account created by the administrator. Connection config is encrypted on the server.",
@@ -249,7 +352,7 @@
     "chooseProject": "Choose a project to view threads",
     "loadingGateway": "Loading remote threads",
     "loadOlder": "Load earlier messages",
-    "loadOlderItems": "Load earlier intermediate steps",
+    "loadOlderItems": "Load more intermediate steps",
     "commandOutputWindow": "Only part of the command output is cached",
     "loadEarlierOutput": "View earlier output",
     "backToLatest": "Return to latest output",

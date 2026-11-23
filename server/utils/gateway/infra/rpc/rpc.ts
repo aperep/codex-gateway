@@ -95,6 +95,9 @@ export class CodexRpcClient extends EventEmitter<CodexRpcClientEvents> {
         },
         capabilities: {
           experimentalApi: true,
+          // Only opt in because the Gateway now presents humanCommand checkpoints with the
+          // restricted single-decision controls. App Server owns pending-request replay.
+          requiredHumanApproval: true,
           // Codex negotiates MCP extensions by their protocol names. Gateway renders
           // OpenAI forms and the current MCP elicitation form capability. These are independent
           // protocol extensions, not compatibility branches for older app-server versions.
@@ -130,6 +133,19 @@ export class CodexRpcClient extends EventEmitter<CodexRpcClientEvents> {
       ]
         .filter((value): value is string => value !== null)
         .join("\n"),
+      messageTranslation: {
+        key:
+          versionState?.upgraded === true
+            ? "connectedUpgraded"
+            : versionState === null
+              ? "connected"
+              : "connectedVersion",
+        values: {
+          host: this.host.name,
+          version: versionState?.version ?? "",
+          beforeVersion: versionState?.beforeVersion ?? "",
+        },
+      },
     });
   }
 

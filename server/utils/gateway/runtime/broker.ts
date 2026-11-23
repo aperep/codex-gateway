@@ -2,7 +2,7 @@ import type {
   AgentProviderId,
   HostRecord,
   ThreadGoalStatus,
-  ThreadSettingsState,
+  ThreadSettingsUpdateInput,
 } from "~~/shared/types";
 import { INITIAL_TIMELINE_PAGE_LIMIT } from "~~/shared/config";
 import type { ServerRequestResponseInput, TurnStartInput, TurnSteerInput } from "./types";
@@ -88,7 +88,7 @@ class ThreadBroker {
     return this.turnCommands.respondToServerRequest(host, threadId, input);
   }
 
-  async updateThreadSettings(host: HostRecord, threadId: string, input: ThreadSettingsState) {
+  async updateThreadSettings(host: HostRecord, threadId: string, input: ThreadSettingsUpdateInput) {
     return this.settings.updateThreadSettings(host, threadId, input);
   }
 
@@ -96,7 +96,7 @@ class ThreadBroker {
     host: HostRecord,
     threadId: string,
     turnId: string,
-    input: Pick<ThreadSettingsState, "model" | "effort" | "summary">,
+    input: import("~~/shared/types/thread").TurnSettingsUpdateInput,
   ) {
     return this.settings.updateTurnSettings(host, threadId, turnId, input);
   }
@@ -183,6 +183,11 @@ class ThreadBroker {
     input: { threadId: string; attachmentType: string; identityKey: string },
   ) {
     return this.attachments.remove(host, input);
+  }
+
+  async getThreadClient(host: HostRecord, threadId: string) {
+    await this.registry.assertThreadWorkspace(host, threadId);
+    return this.registry.getHostClient(host);
   }
 
   async getHostClient(host: HostRecord) {

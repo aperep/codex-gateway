@@ -94,22 +94,12 @@ test("permission presets persist approval and sandbox together across reloads", 
     .getByTestId("project-thread-list")
     .getByRole("button", { name: "新建", exact: true })
     .click();
+  const threadId = await waitForSelectedThreadId(page);
   const picker = page.getByTestId("approval-policy-trigger");
   const menu = page.locator('[data-slot="popover-content"]');
 
-  await picker.click();
-  await menu.getByRole("button", { name: /^完全访问/ }).click();
-  await page.keyboard.press("Escape");
-  await page.getByPlaceholder("输入后续修改要求").fill("/");
-  await page.getByTestId("slash-command-new").click();
-  await waitForSelectedThreadId(page);
-  await reloadApp(page);
-  await expect(picker).toHaveAttribute("title", "完全访问");
-  await expect
-    .poll(() => page.evaluate(() => window.__codexGatewayE2e?.composer.selectedThreadSettings))
-    .toMatchObject({ approvalPolicy: "never", sandboxPolicy: { type: "dangerFullAccess" } });
-
   for (const preset of [
+    { label: "完全访问", policy: "never" },
     { label: "请求审批", policy: "untrusted" },
     { label: "帮我审批", policy: "on-request" },
     { label: "完全访问", policy: "never" },
@@ -123,6 +113,7 @@ test("permission presets persist approval and sandbox together across reloads", 
     expect((await saved).ok()).toBe(true);
     await page.keyboard.press("Escape");
     await reloadApp(page);
+    expect(await waitForSelectedThreadId(page)).toBe(threadId);
     await expect(picker).toHaveAttribute("title", preset.label);
     await expect
       .poll(() => page.evaluate(() => window.__codexGatewayE2e?.composer.selectedThreadSettings))
@@ -695,11 +686,13 @@ function shellQuote(value: string) {
 
 function effortDisplayLabel(value: string) {
   const labels: Record<string, string> = {
-    low: "Light",
-    light: "Light",
-    medium: "Medium",
-    high: "High",
-    xhigh: "Extra High",
+    none: "无",
+    minimal: "最低",
+    low: "低",
+    light: "低",
+    medium: "中",
+    high: "高",
+    xhigh: "极高",
   };
   return labels[value] ?? value;
 }

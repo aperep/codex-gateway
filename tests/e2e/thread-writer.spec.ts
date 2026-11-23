@@ -16,6 +16,9 @@ test("views a thread owned by another client and retries after that client close
   const external = await startExternalCodexTurn(remoteWorkspace.remote, prompt);
   try {
     await expect.poll(external.threadId, { timeout: AGENT_OUTPUT_TIMEOUT_MS }).not.toBeNull();
+    // thread.started precedes the initial prompt's persisted items. Open the read-only view only
+    // once the other real client is executing its command, as in the user handoff being tested.
+    await expect.poll(external.commandStarted, { timeout: AGENT_OUTPUT_TIMEOUT_MS }).toBe(true);
     const threadId = external.threadId()!;
     // The CLI announces its thread before the prompt is persisted. Open the saved-history view
     // only once there is real history to display; this does not acquire the external writer.
